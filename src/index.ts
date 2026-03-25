@@ -57,6 +57,13 @@ import {
   shouldDropMessage,
 } from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
+import {
+  getBudgetStatus,
+  getTriageMetrics,
+  initTriage,
+  setAlertSink,
+  triageMessage,
+} from './triage.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
@@ -204,6 +211,38 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   const prompt = formatMessages(missedMessages, TIMEZONE);
+
+  // Triage gate: deflect cheap messages without spawning a container.
+  // Skip triage for the main control group (admin channel).
+  if (!isMainGroup) {
+    const triageResult = await triageMessage(
+      missedMessages,
+      chatJid,
+      channel.name,
+    );
+    if (triageResult) {
+      if (triageResult.action === 'deflect' && triageResult.response) {
+        lastAgentTimestamp[chatJid] =
+          missedMessages[missedMessages.length - 1].timestamp;
+        saveState();
+        await channel.sendMessage(chatJid, triageResult.response);
+        logger.info(
+          { group: group.name, tier: triageResult.tier },
+          'Triage deflected',
+        );
+        return true;
+      }
+      if (triageResult.action === 'human') {
+        lastAgentTimestamp[chatJid] =
+          missedMessages[missedMessages.length - 1].timestamp;
+        saveState();
+        await channel.sendMessage(chatJid, 'Routing to human support.');
+        logger.info({ group: group.name }, 'Triage routed to human');
+        return true;
+      }
+      // passthrough/escalate → fall through to runAgent()
+    }
+  }
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -498,6 +537,7 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
+  initTriage();
 
   // Ensure OneCLI agents exist for all registered groups.
   // Recovers from missed creates (e.g. OneCLI was down at registration time).
@@ -559,6 +599,71 @@ async function main(): Promise<void> {
     }
   }
 
+  async function handleBudgetCommand(chatJid: string): Promise<void> {
+    const channel = findChannel(channels, chatJid);
+    if (!channel) return;
+
+    const status = await getBudgetStatus();
+    const metrics = getTriageMetrics();
+
+    if (!status && !metrics) {
+      await channel.sendMessage(chatJid, 'Triage is not enabled.');
+      return;
+    }
+
+    const lines: string[] = ['Triage Budget Status', ''];
+
+    if (status) {
+      if (status.maxDailySpend !== null) {
+        const pct = ((status.dailySpend / status.maxDailySpend) * 100).toFixed(
+          0,
+        );
+        lines.push(
+          `Today: $${status.dailySpend.toFixed(2)} / $${status.maxDailySpend.toFixed(2)} (${pct}%)`,
+        );
+      } else {
+        lines.push(`Today: $${status.dailySpend.toFixed(2)} (no daily limit)`);
+      }
+
+      if (status.maxWeeklySpend !== null) {
+        const pct = (
+          (status.weeklySpend / status.maxWeeklySpend) *
+          100
+        ).toFixed(0);
+        lines.push(
+          `This week: $${status.weeklySpend.toFixed(2)} / $${status.maxWeeklySpend.toFixed(2)} (${pct}%)`,
+        );
+      } else {
+        lines.push(
+          `This week: $${status.weeklySpend.toFixed(2)} (no weekly limit)`,
+        );
+      }
+
+      lines.push(
+        `Status: ${status.exceeded ? 'EXCEEDED - Tier 1 disabled' : 'Active'}`,
+      );
+    } else {
+      lines.push(
+        'Budget tracking is not configured. Add a budget section to tickle-stick.yaml.',
+      );
+    }
+
+    if (metrics && metrics.totalProcessed > 0) {
+      lines.push('');
+      const tierParts = Object.entries(metrics.tierDistribution)
+        .sort(([a], [b]) => Number(a) - Number(b))
+        .map(([tier, count]) => `T${tier}: ${count}`);
+      lines.push(
+        `Session: ${metrics.totalProcessed} triaged, $${metrics.totalCost.toFixed(2)} cost, $${metrics.costSaved.toFixed(2)} saved`,
+      );
+      if (tierParts.length > 0) {
+        lines.push(`Tiers: ${tierParts.join(', ')}`);
+      }
+    }
+
+    await channel.sendMessage(chatJid, lines.join('\n'));
+  }
+
   // Channel callbacks (shared by all channels)
   const channelOpts = {
     onMessage: (chatJid: string, msg: NewMessage) => {
@@ -567,6 +672,13 @@ async function main(): Promise<void> {
       if (trimmed === '/remote-control' || trimmed === '/remote-control-end') {
         handleRemoteControl(trimmed, chatJid, msg).catch((err) =>
           logger.error({ err, chatJid }, 'Remote control command error'),
+        );
+        return;
+      }
+
+      if (trimmed === '/budget') {
+        handleBudgetCommand(chatJid).catch((err) =>
+          logger.error({ err, chatJid }, 'Budget command error'),
         );
         return;
       }
@@ -619,6 +731,17 @@ async function main(): Promise<void> {
     logger.fatal('No channels connected');
     process.exit(1);
   }
+
+  // Wire triage budget alerts to the main group channel
+  setAlertSink(async (alert) => {
+    const mainEntry = Object.entries(registeredGroups).find(
+      ([, g]) => g.isMain,
+    );
+    if (!mainEntry) return;
+    const [jid] = mainEntry;
+    const ch = findChannel(channels, jid);
+    if (ch) await ch.sendMessage(jid, `[Budget] ${alert.message}`);
+  });
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({

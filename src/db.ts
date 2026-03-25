@@ -65,6 +65,20 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_task_run_logs ON task_run_logs(task_id, run_at);
 
+    CREATE TABLE IF NOT EXISTS triage_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      message_id TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      tier INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      cost_estimate REAL NOT NULL,
+      confidence REAL,
+      latency_ms REAL NOT NULL,
+      timestamp TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_triage_events_timestamp ON triage_events(timestamp);
+
     CREATE TABLE IF NOT EXISTS router_state (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -694,4 +708,51 @@ function migrateJsonState(): void {
       }
     }
   }
+}
+
+// --- Triage events ---
+
+export function insertTriageEvent(event: {
+  messageId: string;
+  channel: string;
+  tier: number;
+  action: string;
+  costEstimate: number;
+  confidence?: number;
+  latencyMs: number;
+  timestamp: string;
+  metadata?: Record<string, unknown>;
+}): void {
+  const chatJid =
+    (event.metadata?.chat_jid as string | undefined) ?? event.channel;
+  db.prepare(
+    `INSERT INTO triage_events (message_id, chat_jid, channel, tier, action, cost_estimate, confidence, latency_ms, timestamp)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    event.messageId,
+    chatJid,
+    event.channel,
+    event.tier,
+    event.action,
+    event.costEstimate,
+    event.confidence ?? null,
+    event.latencyMs,
+    event.timestamp,
+  );
+}
+
+export function getTriageSpendSince(since: string): number {
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(cost_estimate), 0) as total FROM triage_events WHERE timestamp >= ?`,
+    )
+    .get(since) as { total: number };
+  return row.total;
+}
+
+export function pruneTriageEventsBefore(before: string): number {
+  const result = db
+    .prepare(`DELETE FROM triage_events WHERE timestamp < ?`)
+    .run(before);
+  return result.changes;
 }
