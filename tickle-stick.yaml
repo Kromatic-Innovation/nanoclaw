@@ -1,43 +1,64 @@
 tickleStick:
-  tier0:
-    patterns:
-      - match: "^/help$"
-        type: command
-        action: deflect
-        response: "Commands: /help, /status, /budget. For anything else, just ask!"
-      - match: "^(hi|hello|hey)\\b"
-        type: regex
-        flags: "i"
-        action: deflect
-        response: "Hello! How can I help you?"
-    keywords:
-      - match: ["unsubscribe", "stop", "optout", "opt out"]
-        action: deflect
-        response: "You've been unsubscribed."
-  tier1:
-    systemPrompt: |
-      You are a message triage classifier. Decide if this message needs the full AI agent or can be handled simply.
-      Respond with JSON only: {"action": "deflect"|"escalate"|"human", "response": "...", "confidence": 0.0-1.0}
-      - deflect: simple greeting, status check, or FAQ — provide the response
-      - escalate: needs real thinking, context, or tool use
-      - human: explicitly asks for a human or reports a serious problem
-    confidenceThreshold: 0.7
+  budget:
+    maxDailySpend: 1.00          # USD — Tier 1 auto-disables when exceeded
+    maxWeeklySpend: 5.00         # USD — optional weekly cap
+    alerts:
+      - at: "80%"               # percentage of daily/weekly limit
+      - at: 0.50                # absolute USD threshold
+    retentionDays: 30            # auto-prune triage events older than this
+
   telemetry:
     enabled: true
     format: json
 
-  # Budget caps — disable Tier 1 model calls when spend limits are reached.
-  # Alerts are sent to the main group channel.
-  # budget:
-  #   maxDailySpend: 1.00        # USD — Tier 1 auto-disables when exceeded
-  #   maxWeeklySpend: 5.00       # USD — optional weekly cap
-  #   alerts:
-  #     - at: "80%"              # percentage of daily/weekly limit
-  #     - at: 0.50               # absolute USD threshold
-  #   retentionDays: 30          # auto-prune triage events older than this
+  pipelines:
+    daily-briefing:
+      tier0:
+        command: "python3"
+        args: ["scripts/fetch-daily-data.py"]
+        timeout: 30000
+      tier1:
+        systemPrompt: |
+          You are triaging items for a daily briefing. For each item, respond with JSON:
+          {"classification": "routine"|"urgent"|"needs-reasoning"|"human", "response": "one-line summary", "confidence": 0.0-1.0}
+          - routine: normal item, include summary in briefing
+          - urgent: time-sensitive, needs reasoning to draft response
+          - needs-reasoning: complex, needs synthesis
+          - human: requires human decision (legal, financial, personal)
+        confidenceThreshold: 0.7
+      tier2:
+        prompt: |
+          You are preparing a daily briefing. Here are items that need reasoning:
+          {{items}}
+          Synthesize into: (1) 4-bullet executive summary, (2) BIG ROCK for the day,
+          (3) any items requiring immediate attention with recommended actions.
+      tier3:
+        route: "main"
+
+    weekly-retro:
+      tier0:
+        command: "python3"
+        args: ["scripts/fetch-weekly-data.py"]
+        timeout: 30000
+      tier1:
+        systemPrompt: |
+          Classify this retrospective item as JSON:
+          {"classification": "routine"|"urgent"|"needs-reasoning"|"human", "response": "...", "confidence": 0.0-1.0}
+          - routine: factual data point, include as-is
+          - needs-reasoning: concerning trend or pattern worth analyzing
+          - human: decision needed from human
+        confidenceThreshold: 0.7
+      tier2:
+        prompt: |
+          Weekly retrospective. Data:
+          {{items}}
+          Part 1 — Facts on the ground: costs, errors, key decisions.
+          Part 2 — Retro kickoff: what went well (+), what didn't (-), what to change (delta).
+      tier3:
+        route: "main"
 
 # NanoClaw-specific: optional Tier 1 model provider.
-# Remove or comment out this section to use Tier 0 (deterministic) only.
+# Remove or comment out this section to use Tier 0 only (no classification).
 # triageProvider:
 #   provider: openai           # "openai" or "anthropic"
 #   model: gpt-4o-mini         # cheap model for triage

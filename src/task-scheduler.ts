@@ -19,6 +19,11 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
+import {
+  hasPipeline,
+  runPipeline,
+  formatPipelineReport,
+} from './pipeline-runner.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 /**
@@ -148,6 +153,82 @@ async function runTask(
 
   let result: string | null = null;
   let error: string | null = null;
+
+  // --- Pipeline tasks: bypass container, run through tickle-stick ---
+  if (task.prompt.startsWith('pipeline:')) {
+    const pipelineName = task.prompt.slice('pipeline:'.length).trim();
+    if (!hasPipeline(pipelineName)) {
+      error = `Pipeline not found: ${pipelineName}`;
+      logger.error({ taskId: task.id, pipelineName }, error);
+    } else {
+      try {
+        const pipelineResult = await runPipeline(
+          pipelineName,
+          // onTier2: spawn a container for reasoning
+          async (items, prompt) => {
+            const containerOutput = await runContainerAgent(
+              group,
+              {
+                prompt,
+                groupFolder: task.group_folder,
+                chatJid: task.chat_jid,
+                isMain,
+                isScheduledTask: true,
+                assistantName: ASSISTANT_NAME,
+              },
+              (proc, containerName) =>
+                deps.onProcess(
+                  task.chat_jid,
+                  proc,
+                  containerName,
+                  task.group_folder,
+                ),
+            );
+            return containerOutput.result ?? '';
+          },
+          // onTier3: send human items to channel
+          async (items) => {
+            const msg = items
+              .map((i) => `[${i.source}] ${i.summary}`)
+              .join('\n');
+            await deps.sendMessage(
+              task.chat_jid,
+              `Items needing human attention:\n${msg}`,
+            );
+          },
+        );
+
+        result = formatPipelineReport(pipelineResult);
+        if (result) {
+          await deps.sendMessage(task.chat_jid, result);
+        }
+      } catch (err) {
+        error = err instanceof Error ? err.message : String(err);
+        logger.error(
+          { taskId: task.id, pipelineName, error },
+          'Pipeline failed',
+        );
+      }
+    }
+
+    const durationMs = Date.now() - startTime;
+    logTaskRun({
+      task_id: task.id,
+      run_at: new Date().toISOString(),
+      duration_ms: durationMs,
+      status: error ? 'error' : 'success',
+      result,
+      error,
+    });
+    const nextRun = computeNextRun(task);
+    const resultSummary = error
+      ? `Error: ${error}`
+      : result
+        ? result.slice(0, 200)
+        : 'Completed';
+    updateTaskAfterRun(task.id, nextRun, resultSummary);
+    return;
+  }
 
   // For group context mode, use the group's current session
   const sessions = deps.getSessions();

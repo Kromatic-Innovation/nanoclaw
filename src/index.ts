@@ -59,11 +59,10 @@ import {
 import { startSchedulerLoop } from './task-scheduler.js';
 import {
   getBudgetStatus,
-  getTriageMetrics,
-  initTriage,
+  getPipelineMetrics,
+  initPipelines,
   setAlertSink,
-  triageMessage,
-} from './triage.js';
+} from './pipeline-runner.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
@@ -211,38 +210,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   const prompt = formatMessages(missedMessages, TIMEZONE);
-
-  // Triage gate: deflect cheap messages without spawning a container.
-  // Skip triage for the main control group (admin channel).
-  if (!isMainGroup) {
-    const triageResult = await triageMessage(
-      missedMessages,
-      chatJid,
-      channel.name,
-    );
-    if (triageResult) {
-      if (triageResult.action === 'deflect' && triageResult.response) {
-        lastAgentTimestamp[chatJid] =
-          missedMessages[missedMessages.length - 1].timestamp;
-        saveState();
-        await channel.sendMessage(chatJid, triageResult.response);
-        logger.info(
-          { group: group.name, tier: triageResult.tier },
-          'Triage deflected',
-        );
-        return true;
-      }
-      if (triageResult.action === 'human') {
-        lastAgentTimestamp[chatJid] =
-          missedMessages[missedMessages.length - 1].timestamp;
-        saveState();
-        await channel.sendMessage(chatJid, 'Routing to human support.');
-        logger.info({ group: group.name }, 'Triage routed to human');
-        return true;
-      }
-      // passthrough/escalate → fall through to runAgent()
-    }
-  }
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -537,7 +504,7 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
-  initTriage();
+  initPipelines();
 
   // Ensure OneCLI agents exist for all registered groups.
   // Recovers from missed creates (e.g. OneCLI was down at registration time).
@@ -604,14 +571,14 @@ async function main(): Promise<void> {
     if (!channel) return;
 
     const status = await getBudgetStatus();
-    const metrics = getTriageMetrics();
+    const metrics = getPipelineMetrics();
 
     if (!status && !metrics) {
-      await channel.sendMessage(chatJid, 'Triage is not enabled.');
+      await channel.sendMessage(chatJid, 'Pipelines are not enabled.');
       return;
     }
 
-    const lines: string[] = ['Triage Budget Status', ''];
+    const lines: string[] = ['Pipeline Budget Status', ''];
 
     if (status) {
       if (status.maxDailySpend !== null) {
@@ -654,7 +621,7 @@ async function main(): Promise<void> {
         .sort(([a], [b]) => Number(a) - Number(b))
         .map(([tier, count]) => `T${tier}: ${count}`);
       lines.push(
-        `Session: ${metrics.totalProcessed} triaged, $${metrics.totalCost.toFixed(2)} cost, $${metrics.costSaved.toFixed(2)} saved`,
+        `Session: ${metrics.totalProcessed} processed, $${metrics.totalCost.toFixed(2)} cost`,
       );
       if (tierParts.length > 0) {
         lines.push(`Tiers: ${tierParts.join(', ')}`);

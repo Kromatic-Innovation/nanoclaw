@@ -710,11 +710,12 @@ function migrateJsonState(): void {
   }
 }
 
-// --- Triage events ---
+// --- Pipeline / triage events ---
 
 export function insertTriageEvent(event: {
-  messageId: string;
-  channel: string;
+  pipeline: string;
+  itemId?: string;
+  source?: string;
   tier: number;
   action: string;
   costEstimate: number;
@@ -723,15 +724,13 @@ export function insertTriageEvent(event: {
   timestamp: string;
   metadata?: Record<string, unknown>;
 }): void {
-  const chatJid =
-    (event.metadata?.chat_jid as string | undefined) ?? event.channel;
   db.prepare(
     `INSERT INTO triage_events (message_id, chat_jid, channel, tier, action, cost_estimate, confidence, latency_ms, timestamp)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
-    event.messageId,
-    chatJid,
-    event.channel,
+    event.itemId ?? '',
+    event.pipeline,
+    event.source ?? event.pipeline,
     event.tier,
     event.action,
     event.costEstimate,
