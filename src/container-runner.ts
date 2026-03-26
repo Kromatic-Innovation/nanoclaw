@@ -170,6 +170,18 @@ function buildVolumeMounts(
   fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'reminders', 'requests'), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'reminders', 'responses'), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'github-issues', 'requests'), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'github-issues', 'responses'), {
+    recursive: true,
+  });
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
@@ -222,6 +234,14 @@ async function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Pass GitHub config for the github-issues MCP server
+  if (process.env.GITHUB_OWNER) {
+    args.push('-e', `GITHUB_OWNER=${process.env.GITHUB_OWNER}`);
+  }
+  if (process.env.GITHUB_REPO) {
+    args.push('-e', `GITHUB_REPO=${process.env.GITHUB_REPO}`);
+  }
 
   // OneCLI gateway handles credential injection — containers never see real secrets.
   // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.

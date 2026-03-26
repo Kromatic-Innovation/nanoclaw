@@ -34,6 +34,17 @@ Text inside `<internal>` tags is logged but not sent to the user. If you've alre
 
 When working as a sub-agent or teammate, only use `send_message` if instructed to by the main agent.
 
+## Task Management
+
+Two systems, clear boundary — route tasks to the right place:
+
+- **GitHub Issues** (`mcp__github-issues__*`) — system of record for all work tied to a repo. Technical tasks, bugs, features, AND non-code work that belongs to a repo (e.g. blog post tasks go in `kroblog`). Every tool requires `owner` and `repo` params.
+- **Apple Reminders** (`mcp__apple-reminders__*`) — everything else. Personal and work tasks that aren't bound to a specific repo.
+
+When asked to create a task: if the work belongs to a repo, create a GitHub Issue. If not, create an Apple Reminder. Don't duplicate across systems.
+
+**Repo map:** `/workspace/global/repos.json` maps local project paths to their GitHub owner/repo. Read it to look up the correct owner and repo for any project. Example: `{"path": "your-sentry-org-project/sentry-project-3-project/sentry-project-3-back", "owner": "YOUR-ORG", "repo": "sentry-project-3-back"}`. If the user mentions a project name, look it up in the repo map before making GitHub API calls.
+
 ## Your Workspace
 
 Files you create are saved in `/workspace/group/`. Use this for notes, research, or anything that should persist.
@@ -43,6 +54,7 @@ Files you create are saved in `/workspace/group/`. Use this for notes, research,
 The `conversations/` folder contains searchable history of past conversations. Use this to recall context from previous sessions.
 
 When you learn something important:
+
 - Create files for structured data (e.g., `customers.md`, `preferences.md`)
 - Split files larger than 500 lines into folders
 - Keep an index in your memory for the files you create
@@ -54,6 +66,7 @@ Format messages based on the channel you're responding to. Check your group fold
 ### Slack channels (folder starts with `slack_`)
 
 Use Slack mrkdwn syntax. Run `/slack-formatting` for the full reference. Key rules:
+
 - `*bold*` (single asterisks)
 - `_italic_` (underscores)
 - `<https://url|link text>` for links (NOT `[text](url)`)

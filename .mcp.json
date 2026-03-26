@@ -1,3 +1,9 @@
 {
-  "mcpServers": {}
+  "mcpServers": {
+    "apple-reminders": {
+      "command": "node",
+      "args": ["mcp-servers/apple-reminders/dist/index.js"],
+      "env": {}
+    }
+  }
 }

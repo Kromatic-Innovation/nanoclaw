@@ -8,6 +8,8 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
+import { processGithubIssuesIpc } from './github-issues-ipc.js';
+import { processRemindersIpc } from './reminders-ipc.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
@@ -144,6 +146,23 @@ export function startIpcWatcher(deps: IpcDeps): void {
         }
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
+      }
+
+      // Process Apple Reminders IPC requests (request-response bridge)
+      try {
+        processRemindersIpc(path.join(ipcBaseDir, sourceGroup));
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Error processing reminders IPC');
+      }
+
+      // Process GitHub Issues IPC requests (request-response bridge)
+      try {
+        processGithubIssuesIpc(path.join(ipcBaseDir, sourceGroup));
+      } catch (err) {
+        logger.error(
+          { err, sourceGroup },
+          'Error processing github-issues IPC',
+        );
       }
     }
 
