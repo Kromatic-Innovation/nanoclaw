@@ -135,9 +135,7 @@ async function listLabels(args: Record<string, unknown>): Promise<unknown> {
   return runGh(ghArgs);
 }
 
-async function listMilestones(
-  args: Record<string, unknown>,
-): Promise<unknown> {
+async function listMilestones(args: Record<string, unknown>): Promise<unknown> {
   const state = (args.state as string) || 'open';
   const ghArgs = [
     'api',
@@ -174,10 +172,7 @@ async function createIssue(args: Record<string, unknown>): Promise<unknown> {
     ghArgs.push('--milestone', String(args.milestone));
   }
   // Return the created issue as JSON
-  ghArgs.push(
-    '--json',
-    'number,title,state,url,labels,assignees,milestone',
-  );
+  ghArgs.push('--json', 'number,title,state,url,labels,assignees,milestone');
   return runGh(ghArgs);
 }
 
@@ -254,13 +249,7 @@ async function addComment(args: Record<string, unknown>): Promise<unknown> {
 }
 
 async function createLabel(args: Record<string, unknown>): Promise<unknown> {
-  const ghArgs = [
-    'label',
-    'create',
-    args.name as string,
-    '-R',
-    repoSlug(args),
-  ];
+  const ghArgs = ['label', 'create', args.name as string, '-R', repoSlug(args)];
   if (args.description) {
     ghArgs.push('--description', args.description as string);
   }

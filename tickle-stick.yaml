@@ -1,7 +1,7 @@
 tickleStick:
   budget:
-    maxDailySpend: 1.00          # USD — Tier 1 auto-disables when exceeded
-    maxWeeklySpend: 5.00         # USD — optional weekly cap
+    maxDailySpend: 3.00          # USD — shared pool for all pipelines; raised from $1 for repo-maintenance
+    maxWeeklySpend: 15.00        # USD — allows 2-3 heavy maintenance days per week
     alerts:
       - at: "80%"               # percentage of daily/weekly limit
       - at: 0.50                # absolute USD threshold
@@ -32,6 +32,86 @@ tickleStick:
           {{items}}
           Synthesize into: (1) 4-bullet executive summary, (2) BIG ROCK for the day,
           (3) any items requiring immediate attention with recommended actions.
+      tier3:
+        route: "main"
+
+    repo-maintenance:
+      tier0:
+        command: "python3"
+        args: ["scripts/repo-maintenance-gather.py"]
+        timeout: 300000             # 5 minutes for 27 repos
+      tier1:
+        systemPrompt: |
+          You are triaging repository maintenance items. Each item has a `type` field
+          that provides a pre-classification. Use it as a strong hint but override if needed.
+
+          For each item, respond with JSON:
+          {"classification": "routine"|"urgent"|"needs-reasoning"|"human", "response": "one-line action summary", "confidence": 0.0-1.0}
+
+          Classification rules:
+          - routine: dependabot-safe items (auto-fixable patches), informational CI status
+          - urgent: dependabot-urgent (CVE >= 7.0), production Sentry regressions, CI failures > 2 days
+          - needs-reasoning: dependabot-unsafe (needs plan), multiple related issues, cross-repo impact
+          - human: staging→production approvals, major version bumps, security architecture decisions
+
+          The `type` field maps to classifications:
+          - dependabot-safe → routine (auto-merge candidate)
+          - dependabot-urgent → urgent (immediate attention)
+          - dependabot-unsafe → needs-reasoning (needs implementation plan)
+          - sentry-regression → urgent (production error)
+          - stale-pr → routine (send reminder)
+          - planned-fix → needs-reasoning (attempt fix)
+          - ci-failure → urgent (blocking development)
+        confidenceThreshold: 0.8
+      tier2:
+        prompt: |
+          You are the repo maintenance agent. Process these classified items:
+          {{items}}
+
+          Label taxonomy:
+          - type:bug, type:dependency, type:feature — what kind of work
+          - status:draft → status:planned → status:approved → status:in-progress → status:staged
+          - moscow:must/should/could/wont — priority
+          - ONLY a human can set status:approved. Never add this label yourself.
+
+          Execute the following actions based on classification:
+
+          1. For "routine" dependabot-safe items:
+             - Run: python3 scripts/repo-maintenance-actions.py auto-merge --repo <repo> --pr <number>
+             - Report what was merged
+
+          2. For "urgent" items:
+             - Create GitHub issues with labels "type:bug,status:draft":
+               python3 scripts/repo-maintenance-actions.py create-issue --repo <repo> --title "..." --body-file /tmp/body.md --labels "type:bug,status:draft"
+             - Include severity, affected package, and recommended fix approach
+
+          3. For "needs-reasoning" items:
+             - For items with status:draft: write an implementation plan as a comment, then add status:planned label
+             - For items with status:approved: attempt the fix, create a PR, promote to staging
+             - After staging CI+e2e green: add status:staged label
+             - Verify staging: python3 scripts/repo-maintenance-actions.py check-staging --repo <repo>
+
+          4. For stale PRs:
+             - Post a reminder comment on the PR
+
+          5. For dependency alerts without PRs:
+             - Create GitHub issue with labels "type:dependency,status:draft"
+
+          After all actions, format a morning briefing with these sections:
+          ## Actions Taken (auto)
+          - What was merged, promoted, or created
+
+          ## Needs Your Approval
+          - Items with status:staged (on staging with green CI+e2e, awaiting production promotion)
+
+          ## Needs Attention
+          - Urgent items, CI failures, Sentry regressions with created issues
+
+          ## Health Summary
+          - X/27 repos clean, Y repos with staging drift, Z repos with CI red
+          - Stale PRs count
+
+          ## Cost & Duration
       tier3:
         route: "main"
 
