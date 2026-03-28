@@ -371,6 +371,105 @@ def cmd_status(args: argparse.Namespace) -> None:
     output({"status": "success", "action": "status", "repo": repo, **checks})
 
 
+def cmd_search_issues(args: argparse.Namespace) -> None:
+    """Search for existing open issues to prevent duplicates."""
+    repo = args.repo
+    query = args.query
+
+    result = run(
+        ["gh", "issue", "list", "--repo", repo, "--state", "open",
+         "--search", query, "--json", "number,title,url,labels", "--limit", "5"],
+        timeout=15,
+    )
+    if result.returncode != 0:
+        output({"status": "error", "action": "search-issues",
+                "error": f"Search failed: {result.stderr.strip()}"})
+        return
+
+    try:
+        issues = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        issues = []
+
+    if issues:
+        output({"status": "found", "action": "search-issues",
+                "message": f"Found {len(issues)} matching issue(s)",
+                "issues": [{"number": i["number"], "title": i["title"],
+                            "url": i["url"]} for i in issues],
+                "repo": repo, "query": query})
+    else:
+        output({"status": "none", "action": "search-issues",
+                "message": "No matching issues found",
+                "repo": repo, "query": query})
+
+
+def cmd_check_test_coverage(args: argparse.Namespace) -> None:
+    """Check if a repo has test infrastructure (test dirs, Playwright, CI test workflows)."""
+    repo = args.repo
+    repo_path = find_repo_path(f"{repo}")
+
+    signals = {
+        "has_test_dirs": False,
+        "has_playwright": False,
+        "has_ci_tests": False,
+        "details": [],
+    }
+
+    if not repo_path or not repo_path.exists():
+        # Fall back to checking via GitHub API
+        # Check for test workflows
+        wf_result = run(
+            ["gh", "api", f"repos/{repo}/actions/workflows", "--jq",
+             ".workflows[].name"],
+            timeout=15,
+        )
+        if wf_result.returncode == 0 and wf_result.stdout.strip():
+            workflow_names = wf_result.stdout.strip().lower()
+            if any(kw in workflow_names for kw in ["test", "ci", "check", "lint"]):
+                signals["has_ci_tests"] = True
+                signals["details"].append("CI test workflows found")
+            if "playwright" in workflow_names or "e2e" in workflow_names:
+                signals["has_playwright"] = True
+                signals["details"].append("Playwright/e2e workflow found")
+
+        output({"status": "success", "action": "check-test-coverage",
+                "repo": repo, **signals})
+        return
+
+    # Check local filesystem
+    test_patterns = ["tests", "test", "__tests__", "spec", "specs"]
+    for pattern in test_patterns:
+        for match in repo_path.rglob(pattern):
+            if match.is_dir() and "node_modules" not in str(match):
+                signals["has_test_dirs"] = True
+                signals["details"].append(f"Test dir: {match.relative_to(repo_path)}")
+                break
+        if signals["has_test_dirs"]:
+            break
+
+    # Check for Playwright
+    pw_markers = ["playwright.config.ts", "playwright.config.js",
+                  "playwright.config.mjs"]
+    for marker in pw_markers:
+        if list(repo_path.rglob(marker)):
+            signals["has_playwright"] = True
+            signals["details"].append("Playwright config found")
+            break
+
+    # Check for CI test workflows
+    workflows_dir = repo_path / ".github" / "workflows"
+    if workflows_dir.exists():
+        for wf in workflows_dir.glob("*.yml"):
+            name = wf.stem.lower()
+            if any(kw in name for kw in ["test", "ci", "check", "lint"]):
+                signals["has_ci_tests"] = True
+                signals["details"].append(f"CI workflow: {wf.name}")
+                break
+
+    output({"status": "success", "action": "check-test-coverage",
+            "repo": repo, **signals})
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -412,6 +511,15 @@ def main():
     p_status = subparsers.add_parser("status", help="Quick repo health check")
     p_status.add_argument("--repo", required=True, help="owner/repo slug")
 
+    # search-issues
+    p_search = subparsers.add_parser("search-issues", help="Search open issues for dedup")
+    p_search.add_argument("--repo", required=True, help="owner/repo slug")
+    p_search.add_argument("--query", required=True, help="Search query string")
+
+    # check-test-coverage
+    p_coverage = subparsers.add_parser("check-test-coverage", help="Check repo test infrastructure")
+    p_coverage.add_argument("--repo", required=True, help="owner/repo slug")
+
     args = parser.parse_args()
 
     commands = {
@@ -421,6 +529,8 @@ def main():
         "create-issue": cmd_create_issue,
         "add-label": cmd_add_label,
         "status": cmd_status,
+        "search-issues": cmd_search_issues,
+        "check-test-coverage": cmd_check_test_coverage,
     }
 
     try:

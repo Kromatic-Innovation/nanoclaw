@@ -38,8 +38,11 @@ tickleStick:
     repo-maintenance:
       tier0:
         command: "python3"
-        args: ["scripts/repo-maintenance-gather.py"]
+        args: ["scripts/repo-maintenance-gather.py", "--tier", "auto"]
         timeout: 300000             # 5 minutes for 27 repos
+        # Frequency: daily repos (sentry-project-3, krobar, plinkro, fermi) get full scan every run.
+        # Weekly repos get full scan on Thursdays, urgent-only (dependabot + Sentry) other days.
+        # Fixes for weekly repos land Thursday→Friday (low traffic).
       tier1:
         systemPrompt: |
           You are triaging repository maintenance items. Each item has a `type` field
@@ -62,54 +65,128 @@ tickleStick:
           - stale-pr → routine (send reminder)
           - planned-fix → needs-reasoning (attempt fix)
           - ci-failure → urgent (blocking development)
+          - untriaged-issue → needs-reasoning (needs triage and possibly a plan)
         confidenceThreshold: 0.8
       tier2:
         prompt: |
           You are the repo maintenance agent. Process these classified items:
           {{items}}
 
-          Label taxonomy:
+          ## Label Taxonomy
           - type:bug, type:dependency, type:feature — what kind of work
           - status:draft → status:planned → status:approved → status:in-progress → status:staged
           - moscow:must/should/could/wont — priority
-          - ONLY a human can set status:approved. Never add this label yourself.
 
-          Execute the following actions based on classification:
+          ## Tools Available
+          - python3 scripts/repo-maintenance-actions.py <subcommand>
+            Subcommands: auto-merge, promote-staging, check-staging, create-issue,
+            add-label, status, search-issues, check-test-coverage
 
-          1. For "routine" dependabot-safe items:
-             - Run: python3 scripts/repo-maintenance-actions.py auto-merge --repo <repo> --pr <number>
-             - Report what was merged
+          ## Processing Pipeline (apply to EVERY item)
 
-          2. For "urgent" items:
-             - Create GitHub issues with labels "type:bug,status:draft":
-               python3 scripts/repo-maintenance-actions.py create-issue --repo <repo> --title "..." --body-file /tmp/body.md --labels "type:bug,status:draft"
-             - Include severity, affected package, and recommended fix approach
+          ### Step 1: Dedup
+          Before creating any issue, search for existing ones:
+            python3 scripts/repo-maintenance-actions.py search-issues --repo <repo> --query "<package name or error title>"
+          If status is "found", skip creating a new issue. Add a comment to the existing issue if there's new information.
 
-          3. For "needs-reasoning" items:
-             - For items with status:draft: write an implementation plan as a comment, then add status:planned label
-             - For items with status:approved: attempt the fix, create a PR, promote to staging
-             - After staging CI+e2e green: add status:staged label
-             - Verify staging: python3 scripts/repo-maintenance-actions.py check-staging --repo <repo>
+          ### Step 2: Create issue with plan (if no existing issue)
+          For every new item, create a GitHub issue containing:
+          - Summary of the problem
+          - Root cause analysis (what's affected, why it matters)
+          - Implementation plan (specific files to change, approach)
+          - Test plan (how to verify the fix)
+          - Risk assessment
 
-          4. For stale PRs:
-             - Post a reminder comment on the PR
+          Use the appropriate labels:
+          - Dependabot alerts: type:dependency
+          - Sentry regressions: type:bug
+          - CI failures: type:bug
+          - Stale PRs: type:dependency (if dependabot) or type:feature (if human PR)
 
-          5. For dependency alerts without PRs:
-             - Create GitHub issue with labels "type:dependency,status:draft"
+          Write the body to /tmp/issue-body.md, then:
+            python3 scripts/repo-maintenance-actions.py create-issue --repo <repo> --title "..." --body-file /tmp/issue-body.md --labels "type:...,status:planned"
 
-          After all actions, format a morning briefing with these sections:
-          ## Actions Taken (auto)
-          - What was merged, promoted, or created
+          Note: all new issues start at status:planned (they have a plan from the start).
 
-          ## Needs Your Approval
-          - Items with status:staged (on staging with green CI+e2e, awaiting production promotion)
+          ### Step 3: Auto-fix decision
+          Decide whether to attempt an immediate fix WITHOUT human approval.
+          Each item's metadata includes testCoverage: {has_tests, has_playwright, has_ci_tests}.
 
-          ## Needs Attention
-          - Urgent items, CI failures, Sentry regressions with created issues
+          AUTO-FIX (proceed immediately):
+          - dependabot-safe: auto-merge the PR
+              python3 scripts/repo-maintenance-actions.py auto-merge --repo <repo> --pr <number>
+          - dependabot-urgent or dependabot-unsafe with patch/minor semver: attempt fix
+          - sentry-regression: always auto-fix (regressions have well-defined expected behavior)
+          - ci-failure where failureType is "test": auto-fix (test failures have unambiguous expected state)
+          - planned-fix (status:approved items): auto-fix (human already approved)
+
+          WAIT FOR HUMAN (label stays status:planned):
+          - dependabot with major version bump
+          - ci-failure where failureType is "build" (could be infra or collateral from feature work)
+          - stale PRs for non-dependabot work (unclear why stale)
+          - type:feature items (NEVER auto-fix features)
+          - any item where requirements are ambiguous
+
+          ### Step 4: Attempt fix (for auto-fix items)
+          1. Add label status:in-progress
+          2. Clone repo, create feature branch, implement the fix
+          3. Run tests locally if possible
+          4. Create PR targeting develop
+          5. Wait for CI green on the PR
+          6. Merge PR to develop
+          7. Promote develop to staging:
+               python3 scripts/repo-maintenance-actions.py promote-staging --repo <repo>
+          8. Verify staging CI + e2e:
+               python3 scripts/repo-maintenance-actions.py check-staging --repo <repo>
+          9. If staging green: add label status:staged
+          10. If any step fails: keep status:in-progress, report failure in briefing
+
+          ### Step 5: Stale PR handling
+          For stale dependabot PRs (major upgrades):
+          - Create an issue with a migration/upgrade plan
+          - Post a comment on the PR linking to the issue
+          For stale non-dependabot PRs:
+          - Post a reminder comment asking for status update
+
+          ### Step 6: Untriaged issues (ideas, feedback)
+          For untriaged-issue items (issues with no type:* or status:* labels):
+          - Read the issue body carefully
+          - If the issue is clear enough to write an implementation plan:
+            - Add a comment with the plan (summary, approach, files to change, test plan)
+            - Classify it: add type:bug, type:dependency, or type:feature label
+            - Add status:planned label
+          - If the issue is ambiguous or needs clarification:
+            - Add a comment with specific clarifying questions
+            - Add status:draft label (so it doesn't get re-triaged next run)
+            - Do NOT add a type label yet
+
+          ## Briefing Format
+
+          After all actions, format a morning briefing for Slack:
+
+          ## Auto-Fixed
+          - Items that were fixed, merged, and promoted to staging
+          - Include PR links
+
+          ## Review on Staging
+          - Items with status:staged — on staging with green CI+e2e, needs human to promote to prod
+          - Include staging URLs if available
+
+          ## Plans Awaiting Approval
+          - Items with status:planned that were NOT auto-fixed (major upgrades, ambiguous requirements)
+          - Include link to issue with the plan
+
+          ## Ideas Triaged
+          - Untriaged issues that were reviewed: which got plans, which got clarifying questions
+          - Include links to the issues
+
+          ## Failed Fixes
+          - Auto-fix attempts that failed, with error details
 
           ## Health Summary
-          - X/27 repos clean, Y repos with staging drift, Z repos with CI red
+          - X/27 repos clean, Y repos with open issues, Z repos with CI red
           - Stale PRs count
+          - New items triaged today
 
           ## Cost & Duration
       tier3:

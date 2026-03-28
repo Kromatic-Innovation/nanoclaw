@@ -28,6 +28,20 @@ REPO_HYGIENE_SCRIPT = WORKSPACE_ROOT / "scripts" / "repo_hygiene.py"
 SENTRY_BASE_URL = os.environ.get("SENTRY_BASE_URL", "https://us.sentry.io")
 SENTRY_ORG = os.environ.get("SENTRY_ORG", "your-sentry-org")
 
+# Frequency tiers: daily repos get full scan every run.
+# Weekly repos get full scan on Thursdays, urgent-only (dependabot + Sentry) other days.
+DAILY_REPOS = {
+    "YOUR-ORG/sentry-project-3-front",
+    "YOUR-ORG/sentry-project-3-back",
+    "YOUR-ORG/sentry-project-3-playwright",
+    "YOUR-ORG/krobar-front",
+    "YOUR-ORG/krobar-back",
+    "YOUR-ORG/krobar-playwright",
+    "YOUR-ORG/plinyour-sentry-org",
+    "YOUR-ORG/fermi",
+}
+WEEKLY_DAY = 3  # Thursday (0=Monday, 3=Thursday)
+
 
 def _resolve_sentry_token() -> str:
     """Resolve SENTRY_AUTH_TOKEN from env, falling back to macOS Keychain."""
@@ -270,8 +284,80 @@ def fetch_stale_prs(owner: str, repo: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Test coverage detection
+# ---------------------------------------------------------------------------
+
+def detect_test_coverage(owner: str, repo: str, repo_path: Path | None) -> dict:
+    """Detect test infrastructure for a repo. Used for auto-fix heuristics."""
+    coverage = {"has_tests": False, "has_playwright": False, "has_ci_tests": False}
+
+    if repo_path and repo_path.exists():
+        # Check local filesystem (fast)
+        test_dirs = ["tests", "test", "__tests__", "spec", "specs"]
+        for td in test_dirs:
+            for match in repo_path.rglob(td):
+                if match.is_dir() and "node_modules" not in str(match):
+                    coverage["has_tests"] = True
+                    break
+            if coverage["has_tests"]:
+                break
+
+        pw_configs = ["playwright.config.ts", "playwright.config.js", "playwright.config.mjs"]
+        for pc in pw_configs:
+            if list(repo_path.rglob(pc)):
+                coverage["has_playwright"] = True
+                break
+
+        wf_dir = repo_path / ".github" / "workflows"
+        if wf_dir.exists():
+            for wf in wf_dir.glob("*.yml"):
+                if any(kw in wf.stem.lower() for kw in ["test", "ci", "check"]):
+                    coverage["has_ci_tests"] = True
+                    break
+
+    return coverage
+
+
+# ---------------------------------------------------------------------------
 # Existing maintenance issues (state tracking)
 # ---------------------------------------------------------------------------
+
+def fetch_untriaged_issues(owner: str, repo: str) -> list[dict]:
+    """Find open issues that have no status:* label (ideas, feedback, untriaged)."""
+    raw = run_command(
+        [
+            "gh", "issue", "list",
+            "--repo", f"{owner}/{repo}",
+            "--state", "open",
+            "--limit", "50",
+            "--json", "number,title,url,labels,updatedAt,body",
+        ],
+        timeout=20,
+    )
+    if not raw:
+        return []
+    try:
+        issues = json.loads(raw)
+        if not isinstance(issues, list):
+            return []
+    except json.JSONDecodeError:
+        return []
+
+    untriaged = []
+    for issue in issues:
+        label_names = [
+            l.get("name", "") for l in issue.get("labels", []) if isinstance(l, dict)
+        ]
+        # Skip issues that already have a status label (already in the pipeline)
+        has_status = any(l.startswith("status:") for l in label_names)
+        # Skip issues that have a type label (already classified)
+        has_type = any(l.startswith("type:") for l in label_names)
+        # Skip moscow:wont issues (explicitly deprioritized)
+        is_wont = "moscow:wont" in label_names
+        if not has_status and not has_type and not is_wont:
+            untriaged.append(issue)
+    return untriaged
+
 
 def fetch_maintenance_issues(owner: str, repo: str) -> list[dict]:
     """Find GitHub issues with status:approved label (ready for fixing)."""
@@ -327,19 +413,83 @@ def gather_repo_hygiene() -> dict | None:
         return None
 
 
-def build_work_items() -> list[dict]:
-    """Build the complete WorkItem[] list from all data sources."""
+def build_work_items(
+    repo_filter: str | None = None,
+    skip_hygiene: bool = False,
+    tier: str = "auto",
+) -> list[dict]:
+    """Build the complete WorkItem[] list from all data sources.
+
+    Tier modes:
+      - "auto": daily repos get full scan; weekly repos get full scan on
+        WEEKLY_DAY (Thursday), urgent-only other days.
+      - "daily": only scan daily-tier repos (full scan).
+      - "weekly": only scan weekly-tier repos (full scan).
+      - "all": full scan on all repos regardless of day.
+    """
     items: list[dict] = []
     now = datetime.now(timezone.utc).isoformat()
     repos = load_repos()
     sentry_map = load_sentry_repo_map()
 
+    # Filter to a single repo if requested
+    if repo_filter:
+        repos = [r for r in repos if f"{r['owner']}/{r['repo']}" == repo_filter]
+        sentry_map = {k: v for k, v in sentry_map.items() if k == repo_filter}
+        if not repos:
+            log(f"No repo matching '{repo_filter}' in repos.json")
+            return []
+        log(f"Filtered to single repo: {repo_filter}")
+        urgent_only_slugs: set[str] = set()
+    elif tier == "all":
+        urgent_only_slugs = set()
+    else:
+        # Apply frequency tier filtering
+        today_weekday = datetime.now(timezone.utc).weekday()
+        is_weekly_day = today_weekday == WEEKLY_DAY
+
+        daily_repos = []
+        weekly_repos_full = []
+        weekly_repos_urgent = []
+
+        for r in repos:
+            slug = f"{r['owner']}/{r['repo']}"
+            if slug in DAILY_REPOS:
+                daily_repos.append(r)
+            elif tier == "weekly" or is_weekly_day:
+                weekly_repos_full.append(r)
+            else:
+                weekly_repos_urgent.append(r)
+
+        if tier == "daily":
+            repos = daily_repos
+            log(f"Daily tier: scanning {len(repos)} repos (full)")
+        elif tier == "weekly":
+            repos = weekly_repos_full + weekly_repos_urgent
+            sentry_map = {k: v for k, v in sentry_map.items() if k not in DAILY_REPOS}
+            log(f"Weekly tier: scanning {len(repos)} repos (full)")
+        else:  # auto
+            if is_weekly_day:
+                repos = daily_repos + weekly_repos_full
+                log(f"Auto tier (Thursday): scanning {len(daily_repos)} daily + {len(weekly_repos_full)} weekly repos (full)")
+            else:
+                # Tag weekly repos for urgent-only scan
+                repos = daily_repos + weekly_repos_urgent
+                log(f"Auto tier: scanning {len(daily_repos)} daily (full) + {len(weekly_repos_urgent)} weekly (urgent-only)")
+
+        # Track which repos are urgent-only (skip stale PRs, untriaged issues)
+        urgent_only_slugs = {f"{r['owner']}/{r['repo']}" for r in weekly_repos_urgent}
+
     # Phase 1: Run repo_hygiene.py for supplementary data (CI status, branch health).
     # Note: repo_hygiene.py only discovers repos at the top level and first nesting
     # level due to git repo boundary stopping. repos.json is the source of truth
     # for which repos to scan.
-    log("Phase 1: Running repo_hygiene.py for supplementary data...")
-    hygiene_data = gather_repo_hygiene()
+    hygiene_data = None
+    if skip_hygiene:
+        log("Phase 1: Skipping repo_hygiene.py (--skip-hygiene)")
+    else:
+        log("Phase 1: Running repo_hygiene.py for supplementary data...")
+        hygiene_data = gather_repo_hygiene()
     hygiene_repos: dict[str, dict] = {}
     if hygiene_data and "repos" in hygiene_data:
         for repo_info in hygiene_data["repos"]:
@@ -358,6 +508,8 @@ def build_work_items() -> list[dict]:
         slug = f"{owner}/{repo}"
         hygiene = hygiene_repos.get(slug, {})
         github = hygiene.get("github", {})
+        repo_path = WORKSPACE_ROOT / repo_entry.get("path", "")
+        test_coverage = detect_test_coverage(owner, repo, repo_path)
 
         # 2a: Dependabot alerts
         # Use hygiene count as hint, but always fetch if hygiene didn't cover this repo
@@ -413,12 +565,16 @@ def build_work_items() -> list[dict]:
                         "classification": classification,
                         "cvss": (advisory.get("cvss") or {}).get("score"),
                         "url": alert.get("html_url", ""),
+                        "testCoverage": test_coverage,
                     },
                     "timestamp": alert.get("created_at", now),
                 })
 
-        # 2b: Stale PRs
-        stale_prs = fetch_stale_prs(owner, repo)
+        # 2b: Stale PRs (skip for urgent-only repos)
+        if slug in urgent_only_slugs:
+            stale_prs = []
+        else:
+            stale_prs = fetch_stale_prs(owner, repo)
         for pr in stale_prs:
             pr_number = pr.get("number", 0)
             author = pr.get("author", {})
@@ -441,12 +597,16 @@ def build_work_items() -> list[dict]:
                     "author": author_login,
                     "updatedAt": pr.get("updatedAt", ""),
                     "url": pr.get("url", ""),
+                    "testCoverage": test_coverage,
                 },
                 "timestamp": pr.get("updatedAt", now),
             })
 
-        # 2c: Existing maintenance issues ready for fixing
-        planned_issues = fetch_maintenance_issues(owner, repo)
+        # 2c: Existing maintenance issues ready for fixing (skip for urgent-only repos)
+        if slug in urgent_only_slugs:
+            planned_issues = []
+        else:
+            planned_issues = fetch_maintenance_issues(owner, repo)
         for issue in planned_issues:
             issue_number = issue.get("number", 0)
             label_names = [
@@ -466,11 +626,45 @@ def build_work_items() -> list[dict]:
                     "issueNumber": issue_number,
                     "labels": label_names,
                     "url": issue.get("url", ""),
+                    "testCoverage": test_coverage,
                 },
                 "timestamp": issue.get("updatedAt", now),
             })
 
-        # 2d: CI failures on key branches (from hygiene data)
+        # 2d: Untriaged issues (skip for urgent-only repos)
+        if slug in urgent_only_slugs:
+            untriaged = []
+        else:
+            untriaged = fetch_untriaged_issues(owner, repo)
+        for issue in untriaged:
+            issue_number = issue.get("number", 0)
+            issue_body = issue.get("body", "") or ""
+            label_names = [
+                l.get("name", "") for l in issue.get("labels", []) if isinstance(l, dict)
+            ]
+            items.append({
+                "id": f"untriaged-{owner}-{repo}-{issue_number}",
+                "source": f"github-issue/{slug}",
+                "type": "untriaged-issue",
+                "summary": f"Untriaged #{issue_number}: {issue.get('title', 'Untitled')}",
+                "body": (
+                    f"Repo: {slug}\n"
+                    f"Issue: #{issue_number}\n"
+                    f"URL: {issue.get('url', '')}\n"
+                    f"Body preview: {issue_body[:500]}"
+                ),
+                "metadata": {
+                    "repo": slug,
+                    "issueNumber": issue_number,
+                    "labels": label_names,
+                    "url": issue.get("url", ""),
+                    "bodyLength": len(issue_body),
+                    "testCoverage": test_coverage,
+                },
+                "timestamp": issue.get("updatedAt", now),
+            })
+
+        # 2e: CI failures on key branches (from hygiene data)
         branch_checks = github.get("branch_checks", {})
         for branch_name, check_info in branch_checks.items():
             if not isinstance(check_info, dict):
@@ -478,6 +672,12 @@ def build_work_items() -> list[dict]:
             failing = check_info.get("failing", [])
             for failure in failing:
                 workflow = failure.get("workflow", "unknown")
+                wf_lower = workflow.lower()
+                # Classify failure type: test failures are auto-fixable,
+                # build/deploy failures need human review
+                failure_type = "test" if any(
+                    kw in wf_lower for kw in ["test", "spec", "check", "lint", "e2e", "playwright"]
+                ) else "build"
                 items.append({
                     "id": f"ci-failure-{owner}-{repo}-{branch_name}-{workflow}",
                     "source": f"github-ci/{slug}",
@@ -487,13 +687,16 @@ def build_work_items() -> list[dict]:
                         f"Repo: {slug}\n"
                         f"Branch: {branch_name}\n"
                         f"Workflow: {workflow}\n"
+                        f"Failure type: {failure_type}\n"
                         f"URL: {failure.get('url', '')}"
                     ),
                     "metadata": {
                         "repo": slug,
                         "branch": branch_name,
                         "workflow": workflow,
+                        "failureType": failure_type,
                         "url": failure.get("url", ""),
+                        "testCoverage": test_coverage,
                     },
                     "timestamp": now,
                 })
@@ -536,6 +739,13 @@ def build_work_items() -> list[dict]:
                             "userCount": user_count,
                             "culprit": culprit,
                             "url": permalink,
+                            "testCoverage": detect_test_coverage(
+                                *repo_slug.split("/", 1),
+                                WORKSPACE_ROOT / next(
+                                    (r["path"] for r in repos if f"{r['owner']}/{r['repo']}" == repo_slug),
+                                    "",
+                                ),
+                            ),
                         },
                         "timestamp": issue.get("firstSeen", now),
                     })
@@ -547,7 +757,18 @@ def build_work_items() -> list[dict]:
 
 
 def main():
-    items = build_work_items()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Tier 0 gather for repo-maintenance pipeline")
+    parser.add_argument("--repo", help="Single repo slug (owner/repo) to scan instead of all")
+    parser.add_argument("--skip-hygiene", action="store_true", help="Skip repo_hygiene.py (faster)")
+    parser.add_argument(
+        "--tier", choices=["auto", "daily", "weekly", "all"], default="auto",
+        help="Frequency tier: auto (daily repos + urgent-only weekly), daily, weekly, or all",
+    )
+    args = parser.parse_args()
+
+    items = build_work_items(repo_filter=args.repo, skip_hygiene=args.skip_hygiene, tier=args.tier)
     json.dump(items, sys.stdout)
 
 
