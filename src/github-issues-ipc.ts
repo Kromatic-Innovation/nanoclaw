@@ -171,9 +171,24 @@ async function createIssue(args: Record<string, unknown>): Promise<unknown> {
   if (args.milestone != null) {
     ghArgs.push('--milestone', String(args.milestone));
   }
-  // Return the created issue as JSON
-  ghArgs.push('--json', 'number,title,state,url,labels,assignees,milestone');
-  return runGh(ghArgs);
+  // gh issue create doesn't support --json; it prints the issue URL on success.
+  // Create the issue, then fetch it as JSON via gh issue view.
+  const result = await runGh(ghArgs);
+  const url = typeof result === 'string' ? result.trim() : '';
+  const match = url.match(/\/issues\/(\d+)$/);
+  if (match) {
+    return runGh([
+      'issue',
+      'view',
+      match[1],
+      '-R',
+      repoSlug(args),
+      '--json',
+      'number,title,state,url,labels,assignees,milestone',
+    ]);
+  }
+  // Fallback: return the URL string if we can't parse an issue number
+  return { url, title: args.title };
 }
 
 async function updateIssue(args: Record<string, unknown>): Promise<unknown> {
