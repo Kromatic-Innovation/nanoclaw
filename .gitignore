@@ -18,9 +18,10 @@ groups/global/*
 !groups/main/CLAUDE.md
 !groups/global/CLAUDE.md
 
-# Secrets
+# Secrets & private config
 *.keys.json
 .env
+config/private.yaml
 
 # Temp files
 .tmp-*

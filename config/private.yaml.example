@@ -1,0 +1,25 @@
+# Private NanoClaw configuration — copy to config/private.yaml and fill in.
+# This file is checked into git as a template. private.yaml is gitignored.
+
+github:
+  owner: your-org          # GitHub organization or user
+
+sentry:
+  org: your-sentry-org     # Sentry organization slug
+  baseUrl: https://us.sentry.io
+  # Map GitHub repo slugs to Sentry project slugs.
+  repoMap:
+    your-org/your-repo:
+      - sentry-project-slug
+
+budget:
+  maxDailySpend: 3.00      # USD — shared pool for all pipelines
+  maxWeeklySpend: 15.00    # USD
+
+repoMaintenance:
+  # Repos that get a full scan every run (daily tier).
+  # All other repos in data/repos.json get weekly scans.
+  dailyRepos:
+    - your-org/repo-1
+    - your-org/repo-2
+  weeklyDay: 3             # 0=Monday, 3=Thursday

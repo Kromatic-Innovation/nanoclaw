@@ -1,7 +1,7 @@
 tickleStick:
   budget:
-    maxDailySpend: 3.00          # USD — shared pool for all pipelines; raised from $1 for repo-maintenance
-    maxWeeklySpend: 15.00        # USD — allows 2-3 heavy maintenance days per week
+    maxDailySpend: 1.00          # USD — override in config/private.yaml
+    maxWeeklySpend: 5.00         # USD — override in config/private.yaml
     alerts:
       - at: "80%"               # percentage of daily/weekly limit
       - at: 0.50                # absolute USD threshold
@@ -40,7 +40,7 @@ tickleStick:
         command: "python3"
         args: ["scripts/repo-maintenance-gather.py", "--tier", "auto"]
         timeout: 300000             # 5 minutes for 27 repos
-        # Frequency: daily repos (sentry-project-3, krobar, plinkro, fermi) get full scan every run.
+        # Frequency: daily repos (configured in config/private.yaml) get full scan every run.
         # Weekly repos get full scan on Thursdays, urgent-only (dependabot + Sentry) other days.
         # Fixes for weekly repos land Thursday→Friday (low traffic).
       tier1:

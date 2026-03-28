@@ -2,7 +2,7 @@
 
 ## GitHub
 
-- **Owner:** YOUR-ORG
+- **Owner:** Set via `GITHUB_OWNER` env var or `config/private.yaml`
 - **Repo:** nanoclaw
 
 ## Scope

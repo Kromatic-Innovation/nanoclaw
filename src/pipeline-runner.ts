@@ -88,6 +88,29 @@ export function initPipelines(): void {
     telemetryConfig = config.tickleStick.telemetry;
     budgetConfig = config.tickleStick.budget;
 
+    // Override budget from config/private.yaml if it exists
+    const privatePath = path.join(process.cwd(), 'config', 'private.yaml');
+    if (fs.existsSync(privatePath)) {
+      const privateConfig = parseYaml(
+        fs.readFileSync(privatePath, 'utf-8'),
+      ) as { budget?: { maxDailySpend?: number; maxWeeklySpend?: number } };
+      if (privateConfig?.budget && budgetConfig) {
+        if (privateConfig.budget.maxDailySpend != null) {
+          budgetConfig.maxDailySpend = privateConfig.budget.maxDailySpend;
+        }
+        if (privateConfig.budget.maxWeeklySpend != null) {
+          budgetConfig.maxWeeklySpend = privateConfig.budget.maxWeeklySpend;
+        }
+        logger.info(
+          {
+            maxDailySpend: budgetConfig.maxDailySpend,
+            maxWeeklySpend: budgetConfig.maxWeeklySpend,
+          },
+          'Budget overridden from config/private.yaml',
+        );
+      }
+    }
+
     // Read nanoclaw-specific provider config from the YAML (outside tickle-stick schema)
     const rawYaml = fs.readFileSync(configPath, 'utf-8');
     const fullConfig = parseYaml(rawYaml) as {

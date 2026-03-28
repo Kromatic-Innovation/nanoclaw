@@ -43,7 +43,7 @@ Two systems, clear boundary — route tasks to the right place:
 
 When asked to create a task: if the work belongs to a repo, create a GitHub Issue. If not, create an Apple Reminder. Don't duplicate across systems.
 
-**Repo map:** `/workspace/global/repos.json` maps local project paths to their GitHub owner/repo. Read it to look up the correct owner and repo for any project. Example: `{"path": "your-sentry-org-project/sentry-project-3-project/sentry-project-3-back", "owner": "YOUR-ORG", "repo": "sentry-project-3-back"}`. If the user mentions a project name, look it up in the repo map before making GitHub API calls.
+**Repo map:** `/workspace/global/repos.json` maps local project paths to their GitHub owner/repo. Read it to look up the correct owner and repo for any project. Example: `{"path": "project-group/sub-project/repo-name", "owner": "your-org", "repo": "repo-name"}`. If the user mentions a project name, look it up in the repo map before making GitHub API calls.
 
 ## Your Workspace
 

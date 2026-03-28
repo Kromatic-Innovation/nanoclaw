@@ -26,22 +26,19 @@ WORKSPACE_ROOT = Path(os.environ.get("WORKSPACE_ROOT", os.path.expanduser("~/Cod
 REPOS_JSON = WORKSPACE_ROOT / "data" / "repos.json"
 REPO_HYGIENE_SCRIPT = WORKSPACE_ROOT / "scripts" / "repo_hygiene.py"
 
-SENTRY_BASE_URL = os.environ.get("SENTRY_BASE_URL", "https://us.sentry.io")
-SENTRY_ORG = os.environ.get("SENTRY_ORG", "your-sentry-org")
+# Load org-specific config from config/private.yaml (gitignored).
+# Falls back to environment variables if the file doesn't exist.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from load_private_config import load_private_config
+_PRIVATE = load_private_config()
+
+SENTRY_BASE_URL = _PRIVATE["sentry"]["baseUrl"]
+SENTRY_ORG = _PRIVATE["sentry"]["org"]
 
 # Frequency tiers: daily repos get full scan every run.
 # Weekly repos get full scan on Thursdays, urgent-only (dependabot + Sentry) other days.
-DAILY_REPOS = {
-    "YOUR-ORG/sentry-project-3-front",
-    "YOUR-ORG/sentry-project-3-back",
-    "YOUR-ORG/sentry-project-3-playwright",
-    "YOUR-ORG/krobar-front",
-    "YOUR-ORG/krobar-back",
-    "YOUR-ORG/krobar-playwright",
-    "YOUR-ORG/plinyour-sentry-org",
-    "YOUR-ORG/fermi",
-}
-WEEKLY_DAY = 3  # Thursday (0=Monday, 3=Thursday)
+DAILY_REPOS: set[str] = _PRIVATE["repoMaintenance"]["dailyRepos"]
+WEEKLY_DAY: int = _PRIVATE["repoMaintenance"]["weeklyDay"]
 
 
 def _resolve_sentry_token() -> str:
@@ -64,14 +61,8 @@ def _resolve_sentry_token() -> str:
 SENTRY_AUTH_TOKEN = _resolve_sentry_token()
 
 # Mapping of GitHub repo slugs to Sentry project slugs.
-# Repos with multiple Sentry projects get multiple entries (one per project).
-# Override via SENTRY_REPO_MAP env var (JSON: {"owner/repo": ["sentry-project"]}).
-SENTRY_REPO_MAP_DEFAULT: dict[str, list[str]] = {
-    "YOUR-ORG/krobar-back": ["sentry-project-1"],
-    "YOUR-ORG/krobar-front": ["sentry-project-2   "],
-    "YOUR-ORG/sentry-project-3-front": ["sentry-project-3"],
-    "YOUR-ORG/sentry-project-3-back": ["sentry-project-3-back", "sentry-project-5"],
-}
+# Loaded from config/private.yaml; override via SENTRY_REPO_MAP env var (JSON).
+SENTRY_REPO_MAP_DEFAULT: dict[str, list[str]] = _PRIVATE["sentry"]["repoMap"]
 
 STALE_PR_DAYS = int(os.environ.get("STALE_PR_DAYS", "7"))
 CVE_URGENT_THRESHOLD = float(os.environ.get("CVE_URGENT_THRESHOLD", "7.0"))
@@ -499,7 +490,7 @@ def build_work_items(
                 hygiene_repos[slug] = repo_info
 
     # Phase 2: Per-repo signal collection using repos.json as source of truth.
-    # repos.json includes parent project directories (krobar-project, sentry-project-3-project, etc.)
+    # repos.json includes parent project directories (e.g. krobar-project, orca-project)
     # that aren't actual GitHub repos. We validate each by checking if gh can resolve it.
     # Failures are logged and skipped gracefully.
     log(f"Phase 2: Collecting signals from {len(repos)} repos...")

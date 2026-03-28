@@ -5,7 +5,7 @@ description: Add Tickle Stick triage — a 4-tier cost hierarchy that deflects c
 
 # Add Tickle Stick Triage
 
-This skill adds [tickle-stick](https://github.com/YOUR-ORG/tickle-stick) message triage to NanoClaw. It intercepts inbound messages and deflects simple ones (greetings, commands, keywords) without spawning an expensive agent container.
+This skill adds tickle-stick message triage to NanoClaw. It intercepts inbound messages and deflects simple ones (greetings, commands, keywords) without spawning an expensive agent container.
 
 **What you get:**
 
@@ -35,7 +35,7 @@ git remote -v
 If `tickle-stick-skill` is missing, add it:
 
 ```bash
-git remote add tickle-stick-skill https://github.com/YOUR-ORG/nanoclaw.git
+git remote add tickle-stick-skill <nanoclaw-repo-url>
 ```
 
 ### Merge the skill branch
