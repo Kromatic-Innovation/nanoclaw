@@ -13,6 +13,7 @@ Data sources:
 
 All operations are read-only. No mutations happen in Tier 0.
 """
+from __future__ import annotations
 
 import json
 import os
@@ -758,6 +759,7 @@ def build_work_items(
 
 def main():
     import argparse
+    import traceback
 
     parser = argparse.ArgumentParser(description="Tier 0 gather for repo-maintenance pipeline")
     parser.add_argument("--repo", help="Single repo slug (owner/repo) to scan instead of all")
@@ -768,7 +770,21 @@ def main():
     )
     args = parser.parse_args()
 
-    items = build_work_items(repo_filter=args.repo, skip_hygiene=args.skip_hygiene, tier=args.tier)
+    try:
+        items = build_work_items(repo_filter=args.repo, skip_hygiene=args.skip_hygiene, tier=args.tier)
+    except Exception as err:
+        # Always output valid JSON so the pipeline continues with an error item
+        log(f"FATAL: {err}")
+        traceback.print_exc(file=sys.stderr)
+        items = [{
+            "id": "gather-error",
+            "source": "repo-maintenance-gather",
+            "type": "ci-failure",
+            "summary": f"Gather script crashed: {err}",
+            "body": f"The repo-maintenance gather script failed with:\n\n```\n{traceback.format_exc()}\n```\n\nPartial results may be missing.",
+            "metadata": {"repo": "nanoclaw", "failureType": "build"},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }]
     json.dump(items, sys.stdout)
 
 
