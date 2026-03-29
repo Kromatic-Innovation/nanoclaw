@@ -360,7 +360,7 @@ def fetch_maintenance_issues(owner: str, repo: str) -> list[dict]:
             "--state", "open",
             "--label", "status:approved",
             "--limit", "20",
-            "--json", "number,title,url,labels,updatedAt",
+            "--json", "number,title,url,labels,updatedAt,body",
         ],
         timeout=15,
     )
@@ -369,6 +369,37 @@ def fetch_maintenance_issues(owner: str, repo: str) -> list[dict]:
     try:
         issues = json.loads(raw)
         return issues if isinstance(issues, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
+def fetch_issue_comments(owner: str, repo: str, issue_number: int, limit: int = 3) -> list[dict]:
+    """Fetch the latest N comments on a GitHub issue."""
+    raw = run_command(
+        [
+            "gh", "issue", "view",
+            str(issue_number),
+            "--repo", f"{owner}/{repo}",
+            "--json", "comments",
+        ],
+        timeout=15,
+    )
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        comments = data.get("comments", [])
+        if not isinstance(comments, list):
+            return []
+        # Return the last N comments (author + body, truncated)
+        return [
+            {
+                "author": c.get("author", {}).get("login", "unknown"),
+                "body": (c.get("body", "") or "")[:500],
+                "createdAt": c.get("createdAt", ""),
+            }
+            for c in comments[-limit:]
+        ]
     except json.JSONDecodeError:
         return []
 
@@ -607,18 +638,35 @@ def build_work_items(
             # Skip if already in progress or staged
             if "status:in-progress" in label_names or "status:staged" in label_names:
                 continue
+            issue_body = issue.get("body", "") or ""
+            has_existing_plan = "## Implementation Plan" in issue_body or "## implementation plan" in issue_body.lower()
+            comments = fetch_issue_comments(owner, repo, issue_number)
+            comments_text = ""
+            if comments:
+                comments_text = "\n\n## Recent Comments\n" + "\n".join(
+                    f"- @{c['author']} ({c['createdAt']}): {c['body']}"
+                    for c in comments
+                )
             items.append({
                 "id": f"planned-fix-{owner}-{repo}-{issue_number}",
                 "source": f"github-issue/{slug}",
                 "type": "planned-fix",
                 "summary": f"Ready to fix #{issue_number}: {issue.get('title', 'Untitled')}",
-                "body": f"Repo: {slug}\nIssue: #{issue_number}\nURL: {issue.get('url', '')}",
+                "body": (
+                    f"Repo: {slug}\n"
+                    f"Issue: #{issue_number}\n"
+                    f"URL: {issue.get('url', '')}\n\n"
+                    f"## Existing Issue Body\n{issue_body[:2000]}"
+                    f"{comments_text}"
+                ),
                 "metadata": {
                     "repo": slug,
                     "issueNumber": issue_number,
                     "labels": label_names,
                     "url": issue.get("url", ""),
                     "testCoverage": test_coverage,
+                    "hasExistingPlan": has_existing_plan,
+                    "bodyLength": len(issue_body),
                 },
                 "timestamp": issue.get("updatedAt", now),
             })
@@ -634,6 +682,13 @@ def build_work_items(
             label_names = [
                 l.get("name", "") for l in issue.get("labels", []) if isinstance(l, dict)
             ]
+            comments = fetch_issue_comments(owner, repo, issue_number)
+            comments_text = ""
+            if comments:
+                comments_text = "\n\n## Recent Comments\n" + "\n".join(
+                    f"- @{c['author']} ({c['createdAt']}): {c['body']}"
+                    for c in comments
+                )
             items.append({
                 "id": f"untriaged-{owner}-{repo}-{issue_number}",
                 "source": f"github-issue/{slug}",
@@ -642,8 +697,9 @@ def build_work_items(
                 "body": (
                     f"Repo: {slug}\n"
                     f"Issue: #{issue_number}\n"
-                    f"URL: {issue.get('url', '')}\n"
-                    f"Body preview: {issue_body[:500]}"
+                    f"URL: {issue.get('url', '')}\n\n"
+                    f"## Issue Body\n{issue_body[:2000]}"
+                    f"{comments_text}"
                 ),
                 "metadata": {
                     "repo": slug,
@@ -755,6 +811,7 @@ def main():
     parser = argparse.ArgumentParser(description="Tier 0 gather for repo-maintenance pipeline")
     parser.add_argument("--repo", help="Single repo slug (owner/repo) to scan instead of all")
     parser.add_argument("--skip-hygiene", action="store_true", help="Skip repo_hygiene.py (faster)")
+    parser.add_argument("--preflight-done", action="store_true", help="Preflight already ran hygiene checks; skip them here (same as --skip-hygiene)")
     parser.add_argument(
         "--tier", choices=["auto", "daily", "weekly", "all"], default="auto",
         help="Frequency tier: auto (daily repos + urgent-only weekly), daily, weekly, or all",
@@ -762,7 +819,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        items = build_work_items(repo_filter=args.repo, skip_hygiene=args.skip_hygiene, tier=args.tier)
+        items = build_work_items(repo_filter=args.repo, skip_hygiene=args.skip_hygiene or args.preflight_done, tier=args.tier)
     except Exception as err:
         # Always output valid JSON so the pipeline continues with an error item
         log(f"FATAL: {err}")

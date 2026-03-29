@@ -221,6 +221,12 @@ export function hasPipeline(name: string): boolean {
   return name in pipelineConfigs;
 }
 
+/** Return raw Tier 2 prompt template with {{items}} placeholder intact. */
+export function getPipelinePromptTemplate(pipelineName: string): string | null {
+  const config = pipelineConfigs[pipelineName];
+  return config?.tier2?.prompt ?? null;
+}
+
 /** Return current budget status, or null if budget not configured. */
 export async function getBudgetStatus(): Promise<BudgetStatus | null> {
   return lastPipeline?.getBudgetStatus() ?? null;

@@ -35,10 +35,16 @@ tickleStick:
       tier3:
         route: "main"
 
-    repo-maintenance:
+    # ── Repo maintenance: phased pipeline ──────────────────────────────────
+    # Phase flow: preflight (cleanup) → triage → plan → execute → report
+    # Each phase is a separate pipeline, orchestrated by task-scheduler.ts.
+    # Trigger: "pipeline:repo-maintenance" runs all phases.
+    #          "pipeline:repo-maintenance --phases triage,execute --repos Owner/repo" for selective.
+
+    repo-maintenance-triage:
       tier0:
         command: "python3"
-        args: ["scripts/repo-maintenance-gather.py", "--tier", "auto"]
+        args: ["scripts/repo-maintenance-gather.py", "--tier", "auto", "--preflight-done"]
         timeout: 300000             # 5 minutes for 27 repos
         # Frequency: daily repos (configured in config/private.yaml) get full scan every run.
         # Weekly repos get full scan on Thursdays, urgent-only (dependabot + Sentry) other days.
@@ -69,126 +75,120 @@ tickleStick:
         confidenceThreshold: 0.8
       tier2:
         prompt: |
-          You are the repo maintenance agent. Process these classified items:
+          Triage-only pass. Classify items into work queues. Do NOT execute any fixes.
           {{items}}
+
+          For each item, output a structured lane assignment:
+          - Which repo it belongs to
+          - Whether it needs a plan (untriaged, no existing plan) or is ready for execution (status:approved or auto-fixable)
+          - Cross-repo dependencies (references to issues in other repos)
+
+          Output as JSON summary for the orchestrator.
+      tier3:
+        route: "main"
+
+    repo-maintenance-plan:
+      # No tier0 — items come from triage output, orchestrated by task-scheduler.ts
+      # Box-claude explores the codebase and writes implementation plans.
+      # Plans are written to GitHub issue comments AND .codex/plans/issue-{N}.md
+      # Full prompt template is in prompts/plan-writing.md, loaded by task-scheduler.ts
+      tier2:
+        prompt: |
+          You are exploring a codebase to write implementation plans for maintenance items.
+          Read /workspace/nanoclaw-context/prompt.txt for your full assignment.
+          {{items}}
+      tier3:
+        route: "main"
+
+    repo-maintenance-execute:
+      # No tier0 — items come from triage output (status:approved or auto-fixable).
+      # Box-claude implements fixes using /occam for the delivery pipeline.
+      tier2:
+        prompt: |
+          You are the repo maintenance agent running inside box-claude. Execute fixes for these items:
+          {{items}}
+
+          ## Startup — Read Task Context
+          Check if /workspace/nanoclaw-context/task.json exists. If it does:
+          - Read it for your assignment, repo scope, and any prior context
+          - If `priorContext` is present, a previous session started this work.
+            Resume from the last checkpoint — do NOT restart from scratch.
+            Check the current state (branches, PRs, CI) before taking action.
 
           ## Label Taxonomy
           - type:bug, type:dependency, type:feature — what kind of work
           - status:draft → status:planned → status:approved → status:in-progress → status:staged
           - moscow:must/should/could/wont — priority
 
-          ## Tools Available
-          - python3 scripts/repo-maintenance-actions.py <subcommand>
-            Subcommands: auto-merge, promote-staging, check-staging, create-issue,
-            add-label, status, search-issues, check-test-coverage
+          ## Step 1: Dedup — Read Before Writing
+          Each item's body field includes the existing GitHub issue body and recent comments.
+          Before creating any issue or adding any comment:
+          - Read the existing issue body. If it already has an "## Implementation Plan", do NOT add another.
+          - Read recent comments. If the information you'd add is already there, skip it.
+          - Check if `.codex/plans/issue-<N>.md` exists — read the plan for implementation guidance.
 
-          ## Processing Pipeline (apply to EVERY item)
-
-          ### Step 1: Dedup
-          Before creating any issue, search for existing ones:
-            python3 scripts/repo-maintenance-actions.py search-issues --repo <repo> --query "<package name or error title>"
-          If status is "found", skip creating a new issue. Add a comment to the existing issue if there's new information.
-
-          ### Step 2: Create issue with plan (if no existing issue)
-          For every new item, create a GitHub issue containing:
-          - Summary of the problem
-          - Root cause analysis (what's affected, why it matters)
-          - Implementation plan (specific files to change, approach)
-          - Test plan (how to verify the fix)
-          - Risk assessment
-
-          Use the appropriate labels:
-          - Dependabot alerts: type:dependency
-          - Sentry regressions: type:bug
-          - CI failures: type:bug
-          - Stale PRs: type:dependency (if dependabot) or type:feature (if human PR)
-
-          Write the body to /tmp/issue-body.md, then:
-            python3 scripts/repo-maintenance-actions.py create-issue --repo <repo> --title "..." --body-file /tmp/issue-body.md --labels "type:...,status:planned"
-
-          Note: all new issues start at status:planned (they have a plan from the start).
-
-          ### Step 3: Auto-fix decision
-          Decide whether to attempt an immediate fix WITHOUT human approval.
-          Each item's metadata includes testCoverage: {has_tests, has_playwright, has_ci_tests}.
+          ## Step 2: Auto-fix decision
+          Decide whether to attempt a fix. Check `status:approved` FIRST — approved items
+          have been reviewed by a human and should be attempted regardless of type.
 
           AUTO-FIX (proceed immediately):
+          - status:approved items — human already approved, attempt regardless of type
           - dependabot-safe: auto-merge the PR
-              python3 scripts/repo-maintenance-actions.py auto-merge --repo <repo> --pr <number>
           - dependabot-urgent or dependabot-unsafe with patch/minor semver: attempt fix
           - sentry-regression: always auto-fix (regressions have well-defined expected behavior)
           - ci-failure where failureType is "test": auto-fix (test failures have unambiguous expected state)
-          - planned-fix (status:approved items): auto-fix (human already approved)
 
           WAIT FOR HUMAN (label stays status:planned):
-          - dependabot with major version bump
-          - ci-failure where failureType is "build" (could be infra or collateral from feature work)
+          - dependabot with major version bump (unless status:approved)
+          - ci-failure where failureType is "build" (could be infra or collateral)
           - stale PRs for non-dependabot work (unclear why stale)
-          - type:feature items (NEVER auto-fix features)
+          - type:feature items that are NOT status:approved
           - any item where requirements are ambiguous
 
-          ### Step 4: Attempt fix (for auto-fix items)
-          1. Add label status:in-progress
-          2. Clone repo, create feature branch, implement the fix
-          3. Run tests locally if possible
-          4. Create PR targeting develop
-          5. Wait for CI green on the PR
-          6. Merge PR to develop
-          7. Promote develop to staging:
-               python3 scripts/repo-maintenance-actions.py promote-staging --repo <repo>
-          8. Verify staging CI + e2e:
-               python3 scripts/repo-maintenance-actions.py check-staging --repo <repo>
-          9. If staging green: add label status:staged
-          10. If any step fails: keep status:in-progress, report failure in briefing
+          If you start working on a feature and realize the requirements are unclear or
+          you cannot complete it, stop and add a comment to the issue explaining what
+          needs clarification. Set the label back to status:planned.
 
-          ### Step 5: Stale PR handling
+          ## Step 3: Attempt fix — Use /occam
+          For each item that qualifies for auto-fix:
+          1. Add label status:in-progress to the issue
+          2. Use /occam to orchestrate the full delivery pipeline:
+             - /occam handles: branch creation, implementation, testing, PR, CI wait,
+               merge to develop, staging promotion, staging verification
+             - Pass the issue URL and your implementation approach to /occam
+          3. Do NOT manually run CI/merge/staging steps — /occam owns the delivery pipeline
+          4. If /occam reports success and staging is green: add label status:staged
+          5. If /occam reports failure or you get stuck: keep status:in-progress,
+             include the error in your completion report
+
+          ## Step 4: Stale PR handling
           For stale dependabot PRs (major upgrades):
           - Create an issue with a migration/upgrade plan
           - Post a comment on the PR linking to the issue
           For stale non-dependabot PRs:
           - Post a reminder comment asking for status update
 
-          ### Step 6: Untriaged issues (ideas, feedback)
-          For untriaged-issue items (issues with no type:* or status:* labels):
-          - Read the issue body carefully
-          - If the issue is clear enough to write an implementation plan:
-            - Add a comment with the plan (summary, approach, files to change, test plan)
-            - Classify it: add type:bug, type:dependency, or type:feature label
-            - Add status:planned label
-          - If the issue is ambiguous or needs clarification:
-            - Add a comment with specific clarifying questions
-            - Add status:draft label (so it doesn't get re-triaged next run)
-            - Do NOT add a type label yet
-
-          ## Briefing Format
-
-          After all actions, format a morning briefing for Slack:
-
-          ## Auto-Fixed
-          - Items that were fixed, merged, and promoted to staging
-          - Include PR links
-
-          ## Review on Staging
-          - Items with status:staged — on staging with green CI+e2e, needs human to promote to prod
-          - Include staging URLs if available
-
-          ## Plans Awaiting Approval
-          - Items with status:planned that were NOT auto-fixed (major upgrades, ambiguous requirements)
-          - Include link to issue with the plan
-
-          ## Ideas Triaged
-          - Untriaged issues that were reviewed: which got plans, which got clarifying questions
-          - Include links to the issues
-
-          ## Failed Fixes
-          - Auto-fix attempts that failed, with error details
-
-          ## Health Summary
-          - X/27 repos clean, Y repos with open issues, Z repos with CI red
-          - Stale PRs count
-          - New items triaged today
-
-          ## Cost & Duration
+          ## Completion — Write Status File
+          Before exiting, write /workspace/nanoclaw-context/completion.json:
+          ```json
+          {
+            "status": "completed | partial | failed",
+            "summary": "What was accomplished",
+            "completedSteps": ["list", "of", "completed", "steps"],
+            "remainingSteps": ["list", "of", "remaining", "steps"],
+            "artifacts": {
+              "prs": [{"url": "...", "state": "merged|open", "repo": "..."}],
+              "issuesCreated": [{"url": "...", "repo": "..."}],
+              "stagingGreen": true
+            },
+            "itemResults": [
+              {"id": "item-id", "action": "fixed|skipped|failed", "detail": "..."}
+            ]
+          }
+          ```
+          Use status "completed" if all items were processed.
+          Use status "partial" if you ran out of context or time.
+          Use status "failed" if a critical error prevented work.
       tier3:
         route: "main"
 
