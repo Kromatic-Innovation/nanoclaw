@@ -697,6 +697,13 @@ async function runMaintenancePipeline(
         'repo-maintenance-triage',
         // onTier2: capture classified items for later phases (no execution)
         async (items) => {
+          // Filter to requested repos if --repos was specified
+          if (config.repos && config.repos.length > 0) {
+            items = items.filter((item) => {
+              const slug = extractRepoSlug(item);
+              return config.repos!.some((r) => slug.includes(r));
+            });
+          }
           classifiedItems = items;
           const repoGroups = groupItemsByRepo(items);
           const summary = Array.from(repoGroups.entries())

@@ -88,7 +88,7 @@ tickleStick:
         route: "main"
 
     repo-maintenance-plan:
-      # No tier0 — items come from triage output, orchestrated by task-scheduler.ts
+      # No tier0 — items come from triage output, orchestrated by task-scheduler.ts.
       # Box-claude explores the codebase and writes implementation plans.
       # Plans are written to GitHub issue comments AND .codex/plans/issue-{N}.md
       # Full prompt template is in prompts/plan-writing.md, loaded by task-scheduler.ts
@@ -215,9 +215,9 @@ tickleStick:
         route: "main"
 
 # NanoClaw-specific: optional Tier 1 model provider.
-# Remove or comment out this section to use Tier 0 only (no classification).
-# triageProvider:
-#   provider: openai           # "openai" or "anthropic"
-#   model: gpt-4o-mini         # cheap model for triage
-#   apiKeyEnvVar: OPENAI_API_KEY  # which .env var holds the API key
-#   # baseUrl: https://openrouter.ai/api/v1  # optional: for OpenRouter, Ollama, etc.
+# Comment out this section to use Tier 0 only (no classification).
+triageProvider:
+  provider: anthropic
+  model: claude-haiku-4-5
+  apiKeyEnvVar: ANTHROPIC_API_KEY
+  # baseUrl: https://openrouter.ai/api/v1  # optional: for OpenRouter, Ollama, etc.
