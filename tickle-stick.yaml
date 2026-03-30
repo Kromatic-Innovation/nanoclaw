@@ -51,26 +51,48 @@ tickleStick:
         # Fixes for weekly repos land Thursday→Friday (low traffic).
       tier1:
         systemPrompt: |
-          You are triaging repository maintenance items. Each item has a `type` field
-          that provides a pre-classification. Use it as a strong hint but override if needed.
+          You are triaging repository maintenance items. Each item includes:
+          - A `[type: ...]` line with a pre-classification
+          - A `[labels: ...]` line with GitHub labels (if any)
+          - A summary and optional body
 
           For each item, respond with JSON:
           {"classification": "routine"|"urgent"|"needs-reasoning"|"human", "response": "one-line action summary", "confidence": 0.0-1.0}
 
-          Classification rules:
+          LABEL OVERRIDES (check labels FIRST, these take priority):
+          - status:approved → routine (human already approved; ready for execution)
+          - status:planned → routine (plan already exists; ready for execution)
+          - status:staged → routine (already deployed to staging; just tracking)
+          - status:in-progress → routine (work already underway)
+          - status:blocked → routine (known blocker, just tracking)
+
+          MOSCOW PRIORITY (from labels, influences urgency):
+          - moscow:must → treat as urgent if not already approved/planned
+          - moscow:should → default priority, no override
+          - moscow:could → lower priority, routine unless type says otherwise
+          - moscow:wont → routine (not doing this cycle, just tracking)
+
+          OWNER COMMENT OVERRIDE:
+          If the body mentions "hasOwnerComment: true" or you see a recent comment
+          from @TriKro, classify as needs-reasoning — the owner may have answered
+          planning questions and the plan should be revisited.
+
+          Classification rules (when no label/owner override applies):
           - routine: dependabot-safe items (auto-fixable patches), informational CI status
           - urgent: dependabot-urgent (CVE >= 7.0), production Sentry regressions, CI failures > 2 days
-          - needs-reasoning: dependabot-unsafe (needs plan), multiple related issues, cross-repo impact
+          - needs-reasoning: dependabot-unsafe (needs plan), untriaged items, cross-repo impact
           - human: staging→production approvals, major version bumps, security architecture decisions
 
-          The `type` field maps to classifications:
+          The `type` field maps to default classifications:
           - dependabot-safe → routine (auto-merge candidate)
           - dependabot-urgent → urgent (immediate attention)
           - dependabot-unsafe → needs-reasoning (needs implementation plan)
           - sentry-regression → urgent (production error)
           - stale-pr → routine (send reminder)
-          - planned-fix → needs-reasoning (attempt fix)
+          - planned-fix → needs-reasoning (unless status:approved/planned label → routine)
+          - needs-label-check → needs-reasoning (label may be stale, verify actual state)
           - ci-failure → urgent (blocking development)
+          - draft-with-owner-input → needs-reasoning (owner answered questions, ready for plan)
           - untriaged-issue → needs-reasoning (needs triage and possibly a plan)
         confidenceThreshold: 0.8
       tier2:
@@ -96,6 +118,12 @@ tickleStick:
         prompt: |
           You are exploring a codebase to write implementation plans for maintenance items.
           Read /workspace/nanoclaw-context/prompt.txt for your full assignment.
+
+          IMPORTANT — Label rules for planning:
+          - For draft-with-owner-input items: promote status:draft → status:planned ONLY.
+            Do NOT add status:approved. The plan needs human review before approval.
+          - For other items: do NOT change status labels. Planning writes plans, not approvals.
+          - Never add status:approved — only humans can approve plans.
           {{items}}
       tier3:
         route: "main"
@@ -118,7 +146,33 @@ tickleStick:
           ## Label Taxonomy
           - type:bug, type:dependency, type:feature — what kind of work
           - status:draft → status:planned → status:approved → status:in-progress → status:staged
-          - moscow:must/should/could/wont — priority
+          - status:blocked — item has a known blocker (dependency, missing info, etc.)
+          - moscow:must/should/could/wont — priority (see below)
+
+          ## MoSCoW Prioritization (see docs/moscow-prioritization.md)
+          Process items in MoSCoW order: must → should → could. Skip moscow:wont.
+          - moscow:must — system is broken/blocked without this. Fix immediately.
+          - moscow:should — delivers ROI, workaround exists. Fix this cycle.
+          - moscow:could — nice to have. Fix only after must/should are done.
+          - moscow:wont — not doing this cycle. Skip (do not attempt fix).
+          Within same MoSCoW bucket, sequence by: dependency-ordered → risk-weighted → single-repo first.
+
+          ## Label Hygiene
+          Labels MUST reflect actual state. After processing each item:
+          - Fixed and merged to develop: remove status:in-progress, add status:staged
+          - Fixed and promoted to staging: keep status:staged
+          - Blocked on another repo/dependency: remove status:in-progress/approved, add status:blocked
+          - Skipped (can't fix, unclear requirements): revert to status:planned if was in-progress
+          - Items with type:needs-label-check: verify the actual state on GitHub (check
+            if related PRs were merged, if the issue was fixed) and correct the label
+          - Items with type:draft-with-owner-input: after writing a plan, promote
+            status:draft → status:planned (owner answered questions, plan is ready for approval)
+
+          ## Step 0: Skip items with open PRs
+          Before processing each item, check its metadata.openPRs array. If it is
+          non-empty, a PR already exists for this issue — skip the item entirely.
+          Record it in completion.json with action "skipped" and detail
+          "open PR already exists: #<number>". Do NOT create another PR.
 
           ## Step 1: Dedup — Read Before Writing
           Each item's body field includes the existing GitHub issue body and recent comments.
@@ -168,8 +222,10 @@ tickleStick:
           For stale non-dependabot PRs:
           - Post a reminder comment asking for status update
 
-          ## Completion — Write Status File
-          Before exiting, write /workspace/nanoclaw-context/completion.json:
+          ## Completion — Write Status File (MANDATORY)
+          You MUST write /workspace/nanoclaw-context/completion.json before exiting,
+          even if every item was skipped. Exiting without this file causes a crash
+          in the orchestrator. Write it as the LAST thing you do.
           ```json
           {
             "status": "completed | partial | failed",
@@ -186,7 +242,7 @@ tickleStick:
             ]
           }
           ```
-          Use status "completed" if all items were processed.
+          Use status "completed" if all items were processed (including all-skipped).
           Use status "partial" if you ran out of context or time.
           Use status "failed" if a critical error prevented work.
       tier3:

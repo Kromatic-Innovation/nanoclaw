@@ -93,8 +93,29 @@ const BOX_CLAUDE_SCRIPT = path.resolve(
   'claude-container.sh',
 );
 
-const BOX_CLAUDE_CONCURRENCY = 3;
+const BOX_CLAUDE_CONCURRENCY = 6;
 const BOX_CLAUDE_MAX_RETRIES = 2;
+const BOX_CLAUDE_MAX_ITEMS_PER_LANE = 6;
+
+/** Simple concurrency limiter for async tasks. */
+function createSemaphore(limit: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+
+  return {
+    async acquire() {
+      if (active >= limit) {
+        await new Promise<void>((resolve) => queue.push(resolve));
+      }
+      active++;
+    },
+    release() {
+      active--;
+      const next = queue.shift();
+      if (next) next();
+    },
+  };
+}
 
 interface TaskContext {
   taskId: string;
@@ -195,7 +216,7 @@ async function runBoxClaude(
       BOX_CLAUDE_SCRIPT,
       ['--context-dir', contextDir, '--print', prompt],
       {
-        timeout: 60 * 60 * 1000, // 60 minutes per repo
+        timeout: 120 * 60 * 1000, // 120 minutes per repo
         maxBuffer: 10 * 1024 * 1024, // 10MB stdout
         env: { ...process.env, ...secrets },
       },
@@ -237,15 +258,23 @@ function readCompletion(contextDir: string): CompletionResult | null {
   }
 }
 
+/** Structured result from a box-claude repo run. */
+interface BoxClaudeRepoResult {
+  repo: string;
+  summary: string;
+  completion: CompletionResult | null;
+  status: 'completed' | 'partial' | 'failed' | 'crashed' | 'exhausted';
+}
+
 /**
  * Run box-claude for a single repo with retry on partial completion.
- * Returns the combined report text for this repo.
+ * Returns structured result with completion data for rich reporting.
  */
 async function runBoxClaudeForRepo(
   repoSlug: string,
   repoItems: ClassifiedItem[],
   promptTemplate: string,
-): Promise<string> {
+): Promise<BoxClaudeRepoResult> {
   const taskId = `repo-maint-${repoSlug.replace('/', '-')}-${Date.now()}`;
   const contextDir = path.join(DATA_DIR, 'box-claude-tasks', taskId);
   fs.mkdirSync(path.join(contextDir, 'history'), { recursive: true });
@@ -311,12 +340,22 @@ async function runBoxClaudeForRepo(
           { repo: repoSlug, taskId },
           'Box-claude completed successfully',
         );
-        return completion.summary || stdout.slice(-2000);
+        return {
+          repo: repoSlug,
+          summary: completion.summary || stdout.slice(-2000),
+          completion,
+          status: 'completed',
+        };
       }
 
       if (completion?.status === 'failed') {
         logger.warn({ repo: repoSlug, taskId }, 'Box-claude reported failure');
-        return `[FAILED] ${repoSlug}: ${completion.summary}`;
+        return {
+          repo: repoSlug,
+          summary: completion.summary,
+          completion,
+          status: 'failed',
+        };
       }
 
       if (completion?.status === 'partial') {
@@ -334,36 +373,51 @@ async function runBoxClaudeForRepo(
         continue;
       }
 
-      // No completion.json — likely context exhaustion or crash
-      if (exitCode === 0) {
+      // No completion.json — likely context exhaustion or crash.
+      // Treat both zero and non-zero exits the same: retry with prior
+      // context so box-claude can pick up where it left off. Items that
+      // were already handled will be skipped on the next attempt (the
+      // execute prompt checks for existing PRs and completion state).
+      if (exitCode !== 0) {
+        logger.warn(
+          { repo: repoSlug, exitCode, retryCount, taskId },
+          'Box-claude exited non-zero without completion.json — will retry',
+        );
+      } else {
         logger.warn(
           { repo: repoSlug, retryCount, taskId },
           'Box-claude exited 0 but no completion.json — likely context exhaustion',
         );
-        priorContext = {
-          sessionSummary:
-            'Previous session ended without writing completion status',
-          completedSteps: [],
-          remainingSteps: ['Check current state and continue'],
-          lastCheckpoint: 'Unknown — check GitHub for current state',
-        };
-        retryCount++;
-        continue;
       }
-
-      // Non-zero exit — crash
-      logger.error({ repo: repoSlug, exitCode, taskId }, 'Box-claude crashed');
-      return `[CRASHED] ${repoSlug}: exit code ${exitCode}`;
+      priorContext = {
+        sessionSummary:
+          `Previous session ended without writing completion status (exit code ${exitCode})`,
+        completedSteps: [],
+        remainingSteps: ['Check current state and continue'],
+        lastCheckpoint: 'Unknown — check GitHub for current state',
+      };
+      retryCount++;
+      continue;
     } catch (err) {
       logger.error(
         { repo: repoSlug, err, taskId },
         'Failed to spawn box-claude',
       );
-      return `[ERROR] ${repoSlug}: ${err instanceof Error ? err.message : String(err)}`;
+      return {
+        repo: repoSlug,
+        summary: err instanceof Error ? err.message : String(err),
+        completion: null,
+        status: 'failed',
+      };
     }
   }
 
-  return `[EXHAUSTED] ${repoSlug}: gave up after ${BOX_CLAUDE_MAX_RETRIES + 1} attempts`;
+  return {
+    repo: repoSlug,
+    summary: `gave up after ${BOX_CLAUDE_MAX_RETRIES + 1} attempts`,
+    completion: readCompletion(contextDir),
+    status: 'exhausted',
+  };
 }
 
 /**
@@ -399,36 +453,29 @@ async function processTier2ViaBoxClaude(
   // Process repos with concurrency limit
   const repos = Array.from(repoGroups.entries());
   const results: string[] = [];
-  const running: Promise<void>[] = [];
+  const sem = createSemaphore(BOX_CLAUDE_CONCURRENCY);
+  const allTasks: Promise<void>[] = [];
 
   for (const [repoSlug, repoItems] of repos) {
+    await sem.acquire();
+
     const task = (async () => {
-      const report = await runBoxClaudeForRepo(
-        repoSlug,
-        repoItems,
-        promptTemplate,
-      );
-      results.push(`## ${repoSlug}\n${report}`);
+      try {
+        const result = await runBoxClaudeForRepo(
+          repoSlug,
+          repoItems,
+          promptTemplate,
+        );
+        results.push(`## ${repoSlug}\n${result.summary}`);
+      } finally {
+        sem.release();
+      }
     })();
 
-    running.push(task);
-
-    // Enforce concurrency limit
-    if (running.length >= BOX_CLAUDE_CONCURRENCY) {
-      await Promise.race(running);
-      // Remove settled promises
-      for (let i = running.length - 1; i >= 0; i--) {
-        const settled = await Promise.race([
-          running[i].then(() => true),
-          Promise.resolve(false),
-        ]);
-        if (settled) running.splice(i, 1);
-      }
-    }
+    allTasks.push(task);
   }
 
-  // Wait for remaining
-  await Promise.allSettled(running);
+  await Promise.allSettled(allTasks);
 
   return results.join('\n\n---\n\n');
 }
@@ -505,11 +552,15 @@ function detectCrossRepoDeps(
   for (const [repo, items] of repoGroups) {
     for (const item of items) {
       const body = item.body || '';
-      // Look for references like "other-repo#123" or "owner/other-repo#123"
+      // Only match explicit issue/PR references: "owner/repo#123" or "repo#123"
       for (const otherRepo of allRepos) {
         if (otherRepo === repo) continue;
         const [, repoName] = otherRepo.split('/');
-        if (body.includes(repoName) || body.includes(otherRepo)) {
+        // Match "repo#digits" or "owner/repo#digits" — not just the repo name in text
+        const refPattern = new RegExp(
+          `(?:${otherRepo.replace('/', '\\/')}|${repoName})#\\d+`,
+        );
+        if (refPattern.test(body)) {
           if (!deps.has(repo)) deps.set(repo, new Set());
           deps.get(repo)!.add(otherRepo);
         }
@@ -581,7 +632,29 @@ function buildLanes(
     }
   }
 
-  return lanes;
+  // Split oversized lanes into chunks of BOX_CLAUDE_MAX_ITEMS_PER_LANE
+  const splitLanes: Lane[] = [];
+  for (const lane of lanes) {
+    if (lane.items.length <= BOX_CLAUDE_MAX_ITEMS_PER_LANE) {
+      splitLanes.push(lane);
+    } else {
+      for (
+        let i = 0;
+        i < lane.items.length;
+        i += BOX_CLAUDE_MAX_ITEMS_PER_LANE
+      ) {
+        const chunk = lane.items.slice(i, i + BOX_CLAUDE_MAX_ITEMS_PER_LANE);
+        const chunkIndex = Math.floor(i / BOX_CLAUDE_MAX_ITEMS_PER_LANE) + 1;
+        splitLanes.push({
+          ...lane,
+          id: `${lane.id}-chunk${chunkIndex}`,
+          items: chunk,
+        });
+      }
+    }
+  }
+
+  return splitLanes;
 }
 
 /** Run cleanup scripts for repos after a lane completes. */
@@ -693,23 +766,20 @@ async function runMaintenancePipeline(
     await deps.sendMessage(chatJid, 'Triage starting...');
 
     try {
+      // Pass --repos to the gather script for pre-triage filtering
+      const extraTier0Args = config.repos?.length
+        ? ['--repos', config.repos.join(',')]
+        : undefined;
+
       const triageResult = await runPipeline(
         'repo-maintenance-triage',
-        // onTier2: capture classified items for later phases (no execution)
+        // onTier2: summarize escalated items (no execution here)
         async (items) => {
-          // Filter to requested repos if --repos was specified
-          if (config.repos && config.repos.length > 0) {
-            items = items.filter((item) => {
-              const slug = extractRepoSlug(item);
-              return config.repos!.some((r) => slug.includes(r));
-            });
-          }
-          classifiedItems = items;
           const repoGroups = groupItemsByRepo(items);
           const summary = Array.from(repoGroups.entries())
             .map(([repo, repoItems]) => `${repo}: ${repoItems.length} items`)
             .join(', ');
-          return `Classified ${items.length} items across ${repoGroups.size} repos: ${summary}`;
+          return `${items.length} items escalated across ${repoGroups.size} repos: ${summary}`;
         },
         // onTier3: capture human items
         async (items) => {
@@ -719,6 +789,13 @@ async function runMaintenancePipeline(
             chatJid,
             `Items needing human attention:\n${msg}`,
           );
+        },
+        {
+          extraTier0Args,
+          // Capture ALL classified items (routine + urgent + needs-reasoning + human)
+          onClassified: (items) => {
+            classifiedItems = items;
+          },
         },
       );
 
@@ -816,59 +893,70 @@ async function runMaintenancePipeline(
       );
 
       // Execute lanes with concurrency limit
-      const laneResults: string[] = [];
-      const running: Promise<void>[] = [];
+      const laneResults: BoxClaudeRepoResult[] = [];
+      const laneSem = createSemaphore(config.concurrency);
+      const lanePromises: Promise<void>[] = [];
 
       for (const lane of lanes) {
+        await laneSem.acquire();
+
         const laneTask = (async () => {
-          const promptTemplate =
-            getPipelinePromptTemplate('repo-maintenance-execute') ||
-            'Process these items:\n{{items}}';
+          try {
+            const promptTemplate =
+              getPipelinePromptTemplate('repo-maintenance-execute') ||
+              'Process these items:\n{{items}}';
 
-          // For multi-repo lanes, combine all items into one prompt
-          const report =
-            lane.type === 'multi-repo'
-              ? await runBoxClaudeForRepo(
-                  lane.repos.join('+'),
-                  lane.items,
-                  promptTemplate,
-                )
-              : await runBoxClaudeForRepo(
-                  lane.repos[0],
-                  lane.items,
-                  promptTemplate,
-                );
+            // For multi-repo lanes, combine all items into one prompt
+            const result =
+              lane.type === 'multi-repo'
+                ? await runBoxClaudeForRepo(
+                    lane.repos.join('+'),
+                    lane.items,
+                    promptTemplate,
+                  )
+                : await runBoxClaudeForRepo(
+                    lane.repos[0],
+                    lane.items,
+                    promptTemplate,
+                  );
 
-          laneResults.push(`## ${lane.repos.join(' + ')}\n${report}`);
+            laneResults.push(result);
 
-          // Post-lane cleanup
-          await runPostLaneCleanup(lane);
+            // Post-lane cleanup
+            await runPostLaneCleanup(lane);
 
-          // Per-lane Slack update
-          await deps.sendMessage(
-            chatJid,
-            `Lane complete: ${lane.repos.join(' + ')}`,
-          );
+            // Per-lane Slack update: send rich per-lane report
+            const laneReport = formatLaneReport(result);
+            await deps.sendMessage(chatJid, laneReport);
+          } finally {
+            laneSem.release();
+          }
         })();
 
-        running.push(laneTask);
-
-        // Enforce concurrency limit
-        if (running.length >= config.concurrency) {
-          await Promise.race(running);
-          for (let i = running.length - 1; i >= 0; i--) {
-            const settled = await Promise.race([
-              running[i].then(() => true),
-              Promise.resolve(false),
-            ]);
-            if (settled) running.splice(i, 1);
-          }
-        }
+        lanePromises.push(laneTask);
       }
 
-      await Promise.allSettled(running);
+      await Promise.allSettled(lanePromises);
 
-      const execSummary = `Execution complete. ${lanes.length} lanes processed.`;
+      const fixedCount = laneResults.reduce(
+        (n, r) =>
+          n +
+          (r.completion?.itemResults?.filter((i) => i.action === 'fixed')
+            .length ?? 0),
+        0,
+      );
+      const skippedCount = laneResults.reduce(
+        (n, r) =>
+          n +
+          (r.completion?.itemResults?.filter((i) => i.action !== 'fixed')
+            .length ?? 0),
+        0,
+      );
+      const prCount = laneResults.reduce(
+        (n, r) => n + (r.completion?.artifacts?.prs?.length ?? 0),
+        0,
+      );
+      const execSummary = `Execution complete. ${lanes.length} lane(s): ${fixedCount} fixed (${prCount} PRs), ${skippedCount} skipped/blocked.`;
       results.push({
         phase: 'execute',
         status: 'success',
@@ -890,6 +978,96 @@ async function runMaintenancePipeline(
   const finalReport = formatFinalReport(results);
   await deps.sendMessage(chatJid, finalReport);
   return finalReport;
+}
+
+/** Format a rich per-lane report from box-claude completion data. */
+function formatLaneReport(result: BoxClaudeRepoResult): string {
+  const lines: string[] = [`Maintenance complete (${result.repo}):`];
+  const items = result.completion?.itemResults ?? [];
+
+  if (items.length === 0) {
+    lines.push(result.summary);
+    return lines.join('\n');
+  }
+
+  const fixed = items.filter((i) => i.action === 'fixed');
+  const blocked = items.filter(
+    (i) =>
+      i.action === 'skipped' && /block|depend|missing|await/i.test(i.detail),
+  );
+  const skipped = items.filter(
+    (i) => i.action === 'skipped' && !blocked.includes(i),
+  );
+  const failed = items.filter((i) => i.action === 'failed');
+
+  // Extract issue number from item ID (e.g., "planned-fix-Org-repo-123" → "#123")
+  const issueRef = (id: string): string => {
+    const m = id.match(/-(\d+)$/);
+    return m ? `#${m[1]}` : id;
+  };
+
+  // Extract short detail (first sentence or up to 80 chars)
+  const shortDetail = (detail: string): string => {
+    const first = detail.split(/\.\s/)[0];
+    return first.length > 80 ? first.slice(0, 77) + '...' : first;
+  };
+
+  if (fixed.length > 0) {
+    lines.push('', `Fixed (${fixed.length}):`);
+    // Collect PR URLs for reference
+    const prs = result.completion?.artifacts?.prs ?? [];
+    for (const item of fixed) {
+      const pr = prs.find((p) =>
+        item.detail.includes(p.url.split('/').pop() ?? ''),
+      );
+      const prRef = pr ? ` — ${pr.url}` : '';
+      lines.push(`• ${issueRef(item.id)} ${shortDetail(item.detail)}${prRef}`);
+    }
+    if (result.completion?.artifacts?.stagingGreen) {
+      lines.push('  ✓ staging green');
+    }
+  }
+
+  if (blocked.length > 0) {
+    lines.push('', `Blocked (${blocked.length}):`);
+    for (const item of blocked) {
+      const url = itemIdToUrl(result.repo, item.id);
+      const urlLine = url ? `\n  → ${url}` : '';
+      lines.push(
+        `• ${issueRef(item.id)} ${shortDetail(item.detail)}${urlLine}`,
+      );
+    }
+  }
+
+  if (skipped.length > 0) {
+    lines.push('', `Skipped (${skipped.length}):`);
+    for (const item of skipped) {
+      lines.push(`• ${issueRef(item.id)} ${shortDetail(item.detail)}`);
+    }
+  }
+
+  if (failed.length > 0) {
+    lines.push('', `Failed (${failed.length}):`);
+    for (const item of failed) {
+      const url = itemIdToUrl(result.repo, item.id);
+      const urlLine = url ? `\n  → ${url}` : '';
+      lines.push(
+        `• ${issueRef(item.id)} ${shortDetail(item.detail)}${urlLine}`,
+      );
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/** Build a GitHub issue URL from an item ID and the known repo slug. */
+function itemIdToUrl(repoSlug: string, itemId: string): string | undefined {
+  const issueNum = itemId.match(/-(\d+)$/)?.[1];
+  if (!issueNum) return undefined;
+  if (itemId.startsWith('dependabot-')) {
+    return `https://github.com/${repoSlug}/security/dependabot/${issueNum}`;
+  }
+  return `https://github.com/${repoSlug}/issues/${issueNum}`;
 }
 
 /** Format the final summary across all phases. */

@@ -352,25 +352,39 @@ def fetch_untriaged_issues(owner: str, repo: str) -> list[dict]:
 
 
 def fetch_maintenance_issues(owner: str, repo: str) -> list[dict]:
-    """Find GitHub issues with status:approved label (ready for fixing)."""
-    raw = run_command(
-        [
-            "gh", "issue", "list",
-            "--repo", f"{owner}/{repo}",
-            "--state", "open",
-            "--label", "status:approved",
-            "--limit", "20",
-            "--json", "number,title,url,labels,updatedAt,body",
-        ],
-        timeout=15,
-    )
-    if not raw:
-        return []
-    try:
-        issues = json.loads(raw)
-        return issues if isinstance(issues, list) else []
-    except json.JSONDecodeError:
-        return []
+    """Find GitHub issues with actionable status labels.
+
+    Fetches issues with status:approved, status:planned, status:in-progress,
+    status:blocked, and status:draft so the pipeline can execute, report,
+    reconcile labels, and detect draft items with owner input ready for planning.
+    """
+    seen: set[int] = set()
+    all_issues: list[dict] = []
+    for label in ("status:approved", "status:planned", "status:in-progress", "status:blocked", "status:draft"):
+        raw = run_command(
+            [
+                "gh", "issue", "list",
+                "--repo", f"{owner}/{repo}",
+                "--state", "open",
+                "--label", label,
+                "--limit", "20",
+                "--json", "number,title,url,labels,updatedAt,body",
+            ],
+            timeout=15,
+        )
+        if not raw:
+            continue
+        try:
+            issues = json.loads(raw)
+            if isinstance(issues, list):
+                for issue in issues:
+                    num = issue.get("number", 0)
+                    if num not in seen:
+                        seen.add(num)
+                        all_issues.append(issue)
+        except json.JSONDecodeError:
+            continue
+    return all_issues
 
 
 def fetch_issue_comments(owner: str, repo: str, issue_number: int, limit: int = 3) -> list[dict]:
@@ -399,6 +413,58 @@ def fetch_issue_comments(owner: str, repo: str, issue_number: int, limit: int = 
                 "createdAt": c.get("createdAt", ""),
             }
             for c in comments[-limit:]
+        ]
+    except json.JSONDecodeError:
+        return []
+
+
+# Owner username for detecting human replies to planning questions.
+OWNER_USERNAME = "TriKro"
+BOT_AUTHORS = {"github-actions", "dependabot", "dependabot[bot]", "github-actions[bot]"}
+
+
+def _has_owner_comment(comments: list[dict]) -> bool:
+    """Check if the owner has commented since the last bot/automation comment."""
+    for c in reversed(comments):
+        author = c.get("author", "")
+        if author == OWNER_USERNAME:
+            return True
+        if author in BOT_AUTHORS:
+            return False
+    return False
+
+
+def fetch_open_prs_for_issue(owner: str, repo: str, issue_number: int) -> list[dict]:
+    """Fetch open PRs that reference a given issue number.
+
+    Searches for PRs whose body contains 'closes #N', 'fixes #N', or '#N',
+    returning compact PR metadata so the execute phase can skip items that
+    already have an open PR.
+    """
+    raw = run_command(
+        [
+            "gh", "pr", "list",
+            "--repo", f"{owner}/{repo}",
+            "--state", "open",
+            "--search", f"#{issue_number}",
+            "--json", "number,title,url,headRefName",
+            "--limit", "5",
+        ],
+        timeout=15,
+    )
+    if not raw:
+        return []
+    try:
+        prs = json.loads(raw)
+        if not isinstance(prs, list):
+            return []
+        return [
+            {
+                "number": pr.get("number"),
+                "url": pr.get("url", ""),
+                "branch": pr.get("headRefName", ""),
+            }
+            for pr in prs
         ]
     except json.JSONDecodeError:
         return []
@@ -438,6 +504,7 @@ def gather_repo_hygiene() -> dict | None:
 
 def build_work_items(
     repo_filter: str | None = None,
+    repo_filters: list[str] | None = None,
     skip_hygiene: bool = False,
     tier: str = "auto",
 ) -> list[dict]:
@@ -455,14 +522,20 @@ def build_work_items(
     repos = load_repos()
     sentry_map = load_sentry_repo_map()
 
-    # Filter to a single repo if requested
+    # Merge --repo and --repos into a single filter set
+    filter_slugs: set[str] | None = None
     if repo_filter:
-        repos = [r for r in repos if f"{r['owner']}/{r['repo']}" == repo_filter]
-        sentry_map = {k: v for k, v in sentry_map.items() if k == repo_filter}
+        filter_slugs = {repo_filter}
+    if repo_filters:
+        filter_slugs = (filter_slugs or set()) | set(repo_filters)
+
+    if filter_slugs:
+        repos = [r for r in repos if f"{r['owner']}/{r['repo']}" in filter_slugs]
+        sentry_map = {k: v for k, v in sentry_map.items() if k in filter_slugs}
         if not repos:
-            log(f"No repo matching '{repo_filter}' in repos.json")
+            log(f"No repos matching {filter_slugs} in repos.json")
             return []
-        log(f"Filtered to single repo: {repo_filter}")
+        log(f"Filtered to {len(repos)} repo(s): {', '.join(filter_slugs)}")
         urgent_only_slugs: set[str] = set()
     elif tier == "all":
         urgent_only_slugs = set()
@@ -635,23 +708,41 @@ def build_work_items(
             label_names = [
                 l.get("name", "") for l in issue.get("labels", []) if isinstance(l, dict)
             ]
-            # Skip if already in progress or staged
-            if "status:in-progress" in label_names or "status:staged" in label_names:
-                continue
+            # Items with status:in-progress or status:staged may have stale labels.
+            # Include them for label reconciliation instead of skipping.
+            is_label_check = "status:in-progress" in label_names or "status:staged" in label_names
+            is_draft = "status:draft" in label_names
             issue_body = issue.get("body", "") or ""
             has_existing_plan = "## Implementation Plan" in issue_body or "## implementation plan" in issue_body.lower()
+            open_prs = fetch_open_prs_for_issue(owner, repo, issue_number)
             comments = fetch_issue_comments(owner, repo, issue_number)
             comments_text = ""
+            has_owner_comment = False
             if comments:
                 comments_text = "\n\n## Recent Comments\n" + "\n".join(
                     f"- @{c['author']} ({c['createdAt']}): {c['body']}"
                     for c in comments
                 )
+                has_owner_comment = _has_owner_comment(comments)
+            # Draft items are only included if the owner has commented
+            # (answering planning questions → ready for plan writing).
+            if is_draft and not has_owner_comment:
+                continue
+            # Determine item type based on label state
+            if is_label_check:
+                item_type = "needs-label-check"
+                item_summary = f"Label check #{issue_number}: {issue.get('title', 'Untitled')}"
+            elif is_draft:
+                item_type = "draft-with-owner-input"
+                item_summary = f"Draft with owner input #{issue_number}: {issue.get('title', 'Untitled')}"
+            else:
+                item_type = "planned-fix"
+                item_summary = f"Ready to fix #{issue_number}: {issue.get('title', 'Untitled')}"
             items.append({
                 "id": f"planned-fix-{owner}-{repo}-{issue_number}",
                 "source": f"github-issue/{slug}",
-                "type": "planned-fix",
-                "summary": f"Ready to fix #{issue_number}: {issue.get('title', 'Untitled')}",
+                "type": item_type,
+                "summary": item_summary,
                 "body": (
                     f"Repo: {slug}\n"
                     f"Issue: #{issue_number}\n"
@@ -666,6 +757,8 @@ def build_work_items(
                     "url": issue.get("url", ""),
                     "testCoverage": test_coverage,
                     "hasExistingPlan": has_existing_plan,
+                    "hasOwnerComment": has_owner_comment,
+                    "openPRs": open_prs,
                     "bodyLength": len(issue_body),
                 },
                 "timestamp": issue.get("updatedAt", now),
@@ -684,11 +777,13 @@ def build_work_items(
             ]
             comments = fetch_issue_comments(owner, repo, issue_number)
             comments_text = ""
+            has_owner_comment = False
             if comments:
                 comments_text = "\n\n## Recent Comments\n" + "\n".join(
                     f"- @{c['author']} ({c['createdAt']}): {c['body']}"
                     for c in comments
                 )
+                has_owner_comment = _has_owner_comment(comments)
             items.append({
                 "id": f"untriaged-{owner}-{repo}-{issue_number}",
                 "source": f"github-issue/{slug}",
@@ -706,6 +801,7 @@ def build_work_items(
                     "issueNumber": issue_number,
                     "labels": label_names,
                     "url": issue.get("url", ""),
+                    "hasOwnerComment": has_owner_comment,
                     "bodyLength": len(issue_body),
                     "testCoverage": test_coverage,
                 },
@@ -810,6 +906,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="Tier 0 gather for repo-maintenance pipeline")
     parser.add_argument("--repo", help="Single repo slug (owner/repo) to scan instead of all")
+    parser.add_argument("--repos", help="Comma-separated repo slugs (owner/repo) to scan")
     parser.add_argument("--skip-hygiene", action="store_true", help="Skip repo_hygiene.py (faster)")
     parser.add_argument("--preflight-done", action="store_true", help="Preflight already ran hygiene checks; skip them here (same as --skip-hygiene)")
     parser.add_argument(
@@ -819,7 +916,13 @@ def main():
     args = parser.parse_args()
 
     try:
-        items = build_work_items(repo_filter=args.repo, skip_hygiene=args.skip_hygiene or args.preflight_done, tier=args.tier)
+        repo_filters = args.repos.split(",") if args.repos else None
+        items = build_work_items(
+            repo_filter=args.repo,
+            repo_filters=repo_filters,
+            skip_hygiene=args.skip_hygiene or args.preflight_done,
+            tier=args.tier,
+        )
     except Exception as err:
         # Always output valid JSON so the pipeline continues with an error item
         log(f"FATAL: {err}")
