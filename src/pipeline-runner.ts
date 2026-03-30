@@ -177,10 +177,25 @@ export async function runPipeline(
   pipelineName: string,
   onTier2?: (items: ClassifiedItem[], prompt: string) => Promise<string>,
   onTier3?: (items: ClassifiedItem[]) => Promise<void>,
+  options?: {
+    extraTier0Args?: string[];
+    onClassified?: (items: ClassifiedItem[]) => void;
+  },
 ): Promise<PipelineResult> {
-  const pipelineConfig = pipelineConfigs[pipelineName];
+  let pipelineConfig = pipelineConfigs[pipelineName];
   if (!pipelineConfig) {
     throw new Error(`Pipeline not found: ${pipelineName}`);
+  }
+
+  // Inject extra tier0 args (e.g., --repo for pre-filtering)
+  if (options?.extraTier0Args?.length && pipelineConfig.tier0) {
+    pipelineConfig = {
+      ...pipelineConfig,
+      tier0: {
+        ...pipelineConfig.tier0,
+        args: [...pipelineConfig.tier0.args, ...options.extraTier0Args],
+      },
+    };
   }
 
   const pipeline = new Pipeline({
@@ -188,6 +203,7 @@ export async function runPipeline(
     config: pipelineConfig,
     telemetry: telemetryConfig,
     triageProvider,
+    onClassified: options?.onClassified,
     onTier2,
     onTier3,
     storage,
