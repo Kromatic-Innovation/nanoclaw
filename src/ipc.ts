@@ -10,6 +10,7 @@ import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { processCalendarIpc } from './calendar-ipc.js';
 import { processGithubIssuesIpc } from './github-issues-ipc.js';
+import { processGmailIpc } from './gmail-ipc.js';
 import { processRemindersIpc } from './reminders-ipc.js';
 import { RegisteredGroup } from './types.js';
 
@@ -171,6 +172,13 @@ export function startIpcWatcher(deps: IpcDeps): void {
         processCalendarIpc(path.join(ipcBaseDir, sourceGroup));
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error processing calendar IPC');
+      }
+
+      // Process Gmail IPC requests (request-response bridge)
+      try {
+        processGmailIpc(path.join(ipcBaseDir, sourceGroup));
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Error processing gmail IPC');
       }
     }
 
