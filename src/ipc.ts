@@ -14,6 +14,7 @@ import { processGmailIpc } from './gmail-ipc.js';
 import { processMapsIpc } from './maps-ipc.js';
 import { processRemindersIpc } from './reminders-ipc.js';
 import { processSentryIpc } from './sentry-ipc.js';
+import { processSpotifyIpc } from './spotify-ipc.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
@@ -195,6 +196,13 @@ export function startIpcWatcher(deps: IpcDeps): void {
         processMapsIpc(path.join(ipcBaseDir, sourceGroup));
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error processing maps IPC');
+      }
+
+      // Process Spotify IPC requests (request-response bridge)
+      try {
+        processSpotifyIpc(path.join(ipcBaseDir, sourceGroup));
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Error processing spotify IPC');
       }
     }
 
