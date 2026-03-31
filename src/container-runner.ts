@@ -203,7 +203,9 @@ function buildVolumeMounts(
     group.folder,
     'agent-runner-src',
   );
-  if (!fs.existsSync(groupAgentRunnerDir) && fs.existsSync(agentRunnerSrc)) {
+  if (fs.existsSync(agentRunnerSrc)) {
+    // Always sync source files so new MCP servers and code changes are picked up.
+    // Per-group customizations (if any) would live in separate files.
     fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
   }
   mounts.push({

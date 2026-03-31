@@ -63,6 +63,7 @@ def load_private_config(config_dir: Path | None = None) -> dict:
                 "WEEKLY_DAY",
                 _nested_get(config, "repoMaintenance", "weeklyDay", default=3),
             )),
+            "scheduledRepos": _load_scheduled_repos(config),
         },
     }
 
@@ -94,6 +95,31 @@ def _load_daily_repos(config: dict) -> set[str]:
         return set(r.strip() for r in env_repos.split(",") if r.strip())
     repos = _nested_get(config, "repoMaintenance", "dailyRepos", default=[]) or []
     return set(repos)
+
+
+DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+
+def _load_scheduled_repos(config: dict) -> dict[str, list[str]]:
+    """Load per-day scheduled repos from config.
+
+    Returns a dict mapping day name (lowercase) to list of repo slugs.
+    Also accepts SCHEDULED_REPOS env var as JSON override.
+    """
+    env_val = os.environ.get("SCHEDULED_REPOS")
+    if env_val:
+        try:
+            return json.loads(env_val)
+        except json.JSONDecodeError:
+            pass
+    raw = _nested_get(config, "repoMaintenance", "scheduledRepos", default={}) or {}
+    # Normalize day names to lowercase and ensure list values
+    result: dict[str, list[str]] = {}
+    for day, repos in raw.items():
+        day_lower = day.lower()
+        if day_lower in DAY_NAMES and isinstance(repos, list):
+            result[day_lower] = [str(r) for r in repos]
+    return result
 
 
 def _parse_simple_yaml(path: Path) -> dict:

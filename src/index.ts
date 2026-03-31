@@ -37,6 +37,7 @@ import {
   initDatabase,
   setRegisteredGroup,
   setRouterState,
+  deleteSession,
   setSession,
   storeChatMetadata,
   storeMessage,
@@ -56,7 +57,7 @@ import {
   loadSenderAllowlist,
   shouldDropMessage,
 } from './sender-allowlist.js';
-import { startSchedulerLoop } from './task-scheduler.js';
+import { startSchedulerLoop, triggerPipelineNow } from './task-scheduler.js';
 import {
   getBudgetStatus,
   getPipelineMetrics,
@@ -209,6 +210,28 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (!hasTrigger) return true;
   }
 
+  // Handle /clear command — reset session without invoking the agent
+  const lastMsg = missedMessages[missedMessages.length - 1];
+  if (lastMsg.content.trim().replace(TRIGGER_PATTERN, '').trim() === '/clear') {
+    // Advance cursor past these messages
+    lastAgentTimestamp[chatJid] = lastMsg.timestamp;
+    saveState();
+
+    // Clear session (both in-memory and DB)
+    delete sessions[group.folder];
+    deleteSession(group.folder);
+
+    // Signal any running container to wind down
+    queue.closeStdin(chatJid);
+
+    logger.info({ group: group.name }, 'Session cleared via /clear command');
+    await channel.sendMessage(
+      chatJid,
+      'Session cleared. Next message starts fresh.',
+    );
+    return true;
+  }
+
   const prompt = formatMessages(missedMessages, TIMEZONE);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
@@ -238,6 +261,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   };
 
   await channel.setTyping?.(chatJid, true);
+
+  // Send a brief acknowledgement so the user knows work has started
+  await channel.sendMessage(chatJid, 'Working on it …').catch(() => {});
+
   let hadError = false;
   let outputSentToUser = false;
 
@@ -272,6 +299,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (idleTimer) clearTimeout(idleTimer);
 
   if (output === 'error' || hadError) {
+    // Notify the user about the error
+    await channel
+      .sendMessage(
+        chatJid,
+        'Something went wrong while processing your request. Check logs for details.',
+      )
+      .catch(() => {});
+
     // If we already sent output to the user, don't roll back the cursor —
     // the user got their response and re-processing would send duplicates.
     if (outputSentToUser) {
@@ -647,6 +682,28 @@ async function main(): Promise<void> {
         handleBudgetCommand(chatJid).catch((err) =>
           logger.error({ err, chatJid }, 'Budget command error'),
         );
+        return;
+      }
+
+      // Intercept "pipeline:<name>" commands — route to scheduler, not container agent
+      const pipelineMatch = trimmed.match(/^(?:@\S+\s+)?pipeline:(\S+.*)$/i);
+      if (pipelineMatch) {
+        const pipelinePrompt = pipelineMatch[1].trim();
+        const group = registeredGroups[chatJid];
+        if (group) {
+          const triggered = triggerPipelineNow(
+            pipelinePrompt,
+            chatJid,
+            group.folder,
+          );
+          if (!triggered) {
+            const ch = findChannel(channels, chatJid);
+            ch?.sendMessage(
+              chatJid,
+              'Scheduler not ready yet, try again in a moment.',
+            ).catch(() => {});
+          }
+        }
         return;
       }
 

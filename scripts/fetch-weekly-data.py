@@ -18,12 +18,12 @@ import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 
-# nanoclaw stores its database at data/nanoclaw.db relative to project root
-DATA_DIR = os.environ.get(
-    "NANOCLAW_DATA_DIR",
-    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"),
+# nanoclaw stores its database at store/messages.db relative to project root
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.environ.get(
+    "NANOCLAW_DB_PATH",
+    os.path.join(PROJECT_ROOT, "store", "messages.db"),
 )
-DB_PATH = os.path.join(DATA_DIR, "nanoclaw.db")
 
 
 def get_db() -> sqlite3.Connection | None:
