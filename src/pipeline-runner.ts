@@ -11,6 +11,8 @@ import {
   type StorageAdapter,
   type TierMetrics,
   type ClassifiedItem,
+  type StageCallback,
+  type StageResult,
 } from 'tickle-stick';
 
 import { parse as parseYaml } from 'yaml';
@@ -133,12 +135,12 @@ export function initPipelines(): void {
         });
         logger.info(
           { provider: providerCfg.provider, model: providerCfg.model },
-          'Pipeline Tier 1 provider configured',
+          'Pipeline cheap model provider configured',
         );
       } else {
         logger.warn(
           { envVar: providerCfg.apiKeyEnvVar },
-          'Triage provider configured but API key not found, Tier 1 disabled',
+          'Triage provider configured but API key not found, cheap model stages disabled',
         );
       }
     }
@@ -166,20 +168,18 @@ export function initPipelines(): void {
 }
 
 /**
- * Run a named pipeline. Called from the task scheduler when a task prompt
- * starts with "pipeline:".
+ * Run a named pipeline with stage callbacks.
  *
  * @param pipelineName - Name of the pipeline (e.g. "daily-briefing")
- * @param onTier2 - Callback for Tier 2 reasoning (host provides container/model)
- * @param onTier3 - Callback for Tier 3 human escalation (host provides channel)
+ * @param stageCallbacks - Callbacks keyed by stage name for expensive model and callback stages
+ * @param options - Extra options (tier0 args injection, stage completion hooks)
  */
 export async function runPipeline(
   pipelineName: string,
-  onTier2?: (items: ClassifiedItem[], prompt: string) => Promise<string>,
-  onTier3?: (items: ClassifiedItem[]) => Promise<void>,
+  stageCallbacks?: Record<string, StageCallback>,
   options?: {
-    extraTier0Args?: string[];
-    onClassified?: (items: ClassifiedItem[]) => void;
+    extraScriptArgs?: string[];
+    onStageComplete?: (name: string, result: StageResult) => void;
   },
 ): Promise<PipelineResult> {
   let pipelineConfig = pipelineConfigs[pipelineName];
@@ -187,15 +187,18 @@ export async function runPipeline(
     throw new Error(`Pipeline not found: ${pipelineName}`);
   }
 
-  // Inject extra tier0 args (e.g., --repo for pre-filtering)
-  if (options?.extraTier0Args?.length && pipelineConfig.tier0) {
-    pipelineConfig = {
-      ...pipelineConfig,
-      tier0: {
-        ...pipelineConfig.tier0,
-        args: [...pipelineConfig.tier0.args, ...options.extraTier0Args],
-      },
-    };
+  // Inject extra args into the first script stage (e.g., --repo for pre-filtering)
+  if (options?.extraScriptArgs?.length) {
+    const firstScriptIdx = pipelineConfig.stages.findIndex(
+      (s) => s.type === 'script',
+    );
+    if (firstScriptIdx >= 0) {
+      const stages = [...pipelineConfig.stages];
+      const scriptStage = { ...stages[firstScriptIdx] };
+      scriptStage.args = [...scriptStage.args, ...options.extraScriptArgs];
+      stages[firstScriptIdx] = scriptStage;
+      pipelineConfig = { stages };
+    }
   }
 
   const pipeline = new Pipeline({
@@ -203,9 +206,8 @@ export async function runPipeline(
     config: pipelineConfig,
     telemetry: telemetryConfig,
     triageProvider,
-    onClassified: options?.onClassified,
-    onTier2,
-    onTier3,
+    stageCallbacks,
+    onStageComplete: options?.onStageComplete,
     storage,
     alertSink: (alert) => alertSinkFn?.(alert),
     budgetConfig,
@@ -219,10 +221,13 @@ export async function runPipeline(
   logger.info(
     {
       pipeline: pipelineName,
-      tier0Items: result.tier0Items,
-      tier1Classified: result.tier1Classified,
-      tier2Escalated: result.tier2Escalated,
-      tier3Human: result.tier3Human,
+      totalItems: result.totalItems,
+      stages: result.stageResults.map((s) => ({
+        name: s.name,
+        type: s.type,
+        items: s.items.length,
+        cost: s.costEstimate,
+      })),
       cost: result.costEstimate,
       latencyMs: result.latencyMs,
     },
@@ -237,10 +242,15 @@ export function hasPipeline(name: string): boolean {
   return name in pipelineConfigs;
 }
 
-/** Return raw Tier 2 prompt template with {{items}} placeholder intact. */
-export function getPipelinePromptTemplate(pipelineName: string): string | null {
+/** Return the prompt template from a specific stage in a pipeline, or null. */
+export function getStagePrompt(
+  pipelineName: string,
+  stageName: string,
+): string | null {
   const config = pipelineConfigs[pipelineName];
-  return config?.tier2?.prompt ?? null;
+  if (!config) return null;
+  const stage = config.stages.find((s) => s.name === stageName);
+  return stage?.prompt ?? null;
 }
 
 /** Return current budget status, or null if budget not configured. */
@@ -259,32 +269,22 @@ export function getPipelineMetrics(): TierMetrics | null {
 export function formatPipelineReport(result: PipelineResult): string {
   const lines: string[] = [];
 
-  if (result.tier0Items === 0) {
+  if (result.totalItems === 0) {
     lines.push(`Pipeline "${result.pipeline}": no new items found.`);
     return lines.join('\n');
   }
 
-  lines.push(`Pipeline "${result.pipeline}": ${result.tier0Items} items found`);
+  lines.push(`Pipeline "${result.pipeline}": ${result.totalItems} items found`);
 
-  if (result.routineReport) {
-    lines.push('', 'Routine items:', result.routineReport);
-  }
-
-  if (result.reasoningReport) {
-    lines.push('', result.reasoningReport);
-  }
-
-  if (result.humanItems && result.humanItems.length > 0) {
-    lines.push(
-      '',
-      `${result.humanItems.length} item(s) need human attention:`,
-      ...result.humanItems.map((item) => `- [${item.source}] ${item.summary}`),
-    );
+  for (const stage of result.stageResults) {
+    if (stage.output) {
+      lines.push('', stage.output);
+    }
   }
 
   lines.push(
     '',
-    `Cost: $${result.costEstimate.toFixed(4)} | Items: T0=${result.tier0Items} T1=${result.tier1Classified} T2=${result.tier2Escalated} T3=${result.tier3Human}`,
+    `Cost: $${result.costEstimate.toFixed(4)} | Stages: ${result.stageResults.map((s) => `${s.name}=${s.items.length}`).join(' ')}`,
   );
 
   return lines.join('\n');

@@ -1,7 +1,9 @@
 import { ChildProcess, execFile } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
+import { parse as parseYaml } from 'yaml';
 
 import {
   ASSISTANT_NAME,
@@ -15,6 +17,8 @@ import {
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
+  createTask,
+  getAllRegisteredGroups,
   getAllTasks,
   getDueTasks,
   getTaskById,
@@ -30,7 +34,7 @@ import {
   hasPipeline,
   runPipeline,
   formatPipelineReport,
-  getPipelinePromptTemplate,
+  getStagePrompt,
 } from './pipeline-runner.js';
 import {
   runPreflight,
@@ -38,7 +42,7 @@ import {
   type PreflightResult,
 } from './preflight.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
-import type { ClassifiedItem } from 'tickle-stick';
+import type { ClassifiedItem, StageCallback } from 'tickle-stick';
 
 /**
  * Compute the next run time for a recurring task, anchored to the
@@ -390,8 +394,7 @@ async function runBoxClaudeForRepo(
         );
       }
       priorContext = {
-        sessionSummary:
-          `Previous session ended without writing completion status (exit code ${exitCode})`,
+        sessionSummary: `Previous session ended without writing completion status (exit code ${exitCode})`,
         completedSteps: [],
         remainingSteps: ['Check current state and continue'],
         lastCheckpoint: 'Unknown — check GitHub for current state',
@@ -421,8 +424,141 @@ async function runBoxClaudeForRepo(
 }
 
 /**
- * Process Tier 2 items by spawning per-repo box-claude instances.
- * Replaces the old single-container onTier2 callback.
+ * Process Tier 2 via a direct Anthropic API call.
+ * No container, no box-claude — just a single API request.
+ * Returns the full response including label_actions JSON.
+ */
+async function processTier2Direct(
+  items: ClassifiedItem[],
+  prompt: string,
+): Promise<string> {
+  const env = readEnvFile(['ANTHROPIC_API_KEY']);
+  const apiKey = env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    throw new Error('ANTHROPIC_API_KEY not found — cannot run Tier 2');
+  }
+
+  logger.info(
+    { itemCount: items.length },
+    'Processing Tier 2 via API (daily briefing)',
+  );
+
+  const body = JSON.stringify({
+    model: 'claude-opus-4-6',
+    max_tokens: 4096,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body,
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Anthropic API error (${response.status}): ${errText}`);
+  }
+
+  const data = (await response.json()) as {
+    content: { type: string; text?: string }[];
+  };
+  const text = data.content
+    .filter((c) => c.type === 'text')
+    .map((c) => c.text)
+    .join('\n');
+
+  logger.info({ outputLength: text.length }, 'Tier 2 API completed');
+
+  return text;
+}
+
+/**
+ * Execute email drafts from the Tier 2 reasoning output.
+ * Parses draft blocks and creates Gmail drafts via the email action guard.
+ */
+async function executeEmailDrafts(reasoningOutput: string): Promise<void> {
+  // Look for draft blocks in the output: Action: draft
+  // Format from Tier 2: To: <recipient>, Subject: <subject>, Draft: <text>
+  const draftPattern =
+    /To:\s*(.+?)\n\s*Subject:\s*(.+?)\n\s*Draft:\s*([\s\S]*?)\n\s*Action:\s*draft/gi;
+
+  let match: RegExpExecArray | null;
+  const drafts: { to: string; subject: string; body: string }[] = [];
+
+  while ((match = draftPattern.exec(reasoningOutput)) !== null) {
+    drafts.push({
+      to: match[1].trim(),
+      subject: match[2].trim(),
+      body: match[3].trim(),
+    });
+  }
+
+  if (drafts.length === 0) {
+    logger.debug('No email drafts found in Tier 2 output');
+    return;
+  }
+
+  const guardScript = path.join(
+    process.cwd(),
+    'scripts',
+    'email-action-guard.py',
+  );
+
+  for (const draft of drafts) {
+    logger.info(
+      { to: draft.to, subject: draft.subject },
+      'Creating email draft via action guard',
+    );
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        execFile(
+          'python3',
+          [
+            guardScript,
+            'draft-new',
+            '--to',
+            draft.to,
+            '--subject',
+            draft.subject,
+            '--body',
+            draft.body,
+          ],
+          { timeout: 30000, env: process.env },
+          (err, _stdout, stderr) => {
+            if (stderr) {
+              logger.debug(
+                { stderr: stderr.slice(-500) },
+                'Draft guard stderr',
+              );
+            }
+            if (err) {
+              logger.warn(
+                { to: draft.to, err: err.message },
+                'Email draft blocked or failed',
+              );
+              // Don't reject — blocked drafts are expected behavior
+              resolve();
+            } else {
+              logger.info({ to: draft.to }, 'Email draft created');
+              resolve();
+            }
+          },
+        );
+      });
+    } catch (err) {
+      logger.warn({ to: draft.to, err }, 'Email draft execution error');
+    }
+  }
+}
+
+/**
+ * Process expensive model stage items by spawning per-repo box-claude instances.
  */
 async function processTier2ViaBoxClaude(
   items: ClassifiedItem[],
@@ -431,17 +567,18 @@ async function processTier2ViaBoxClaude(
   const repoGroups = groupItemsByRepo(items);
 
   // Load prompt template: prefer file-based prompt for plan pipeline,
-  // fall back to YAML tier2.prompt, then a default.
+  // fall back to the first expensive model stage prompt, then a default.
   let promptTemplate: string;
   if (pipelineName === 'repo-maintenance-plan') {
     const promptFile = path.join(process.cwd(), 'prompts', 'plan-writing.md');
     promptTemplate = fs.existsSync(promptFile)
       ? fs.readFileSync(promptFile, 'utf-8')
-      : getPipelinePromptTemplate(pipelineName) ||
+      : getStagePrompt(pipelineName, 'plan') ||
         'Process these items:\n{{items}}';
   } else {
     promptTemplate =
-      getPipelinePromptTemplate(pipelineName) ||
+      getStagePrompt(pipelineName, 'execute') ||
+      getStagePrompt(pipelineName, 'triage') ||
       'Process these items:\n{{items}}';
   }
 
@@ -767,39 +904,52 @@ async function runMaintenancePipeline(
 
     try {
       // Pass --repos to the gather script for pre-triage filtering
-      const extraTier0Args = config.repos?.length
+      const extraScriptArgs = config.repos?.length
         ? ['--repos', config.repos.join(',')]
         : undefined;
 
       const triageResult = await runPipeline(
         'repo-maintenance-triage',
-        // onTier2: summarize escalated items (no execution here)
-        async (items) => {
-          const repoGroups = groupItemsByRepo(items);
-          const summary = Array.from(repoGroups.entries())
-            .map(([repo, repoItems]) => `${repo}: ${repoItems.length} items`)
-            .join(', ');
-          return `${items.length} items escalated across ${repoGroups.size} repos: ${summary}`;
-        },
-        // onTier3: capture human items
-        async (items) => {
-          humanItems = items;
-          const msg = items.map((i) => `[${i.source}] ${i.summary}`).join('\n');
-          await deps.sendMessage(
-            chatJid,
-            `Items needing human attention:\n${msg}`,
-          );
+        {
+          // triage stage: summarize escalated items (no execution here)
+          triage: async (items) => {
+            const repoGroups = groupItemsByRepo(items);
+            const summary = Array.from(repoGroups.entries())
+              .map(([repo, repoItems]) => `${repo}: ${repoItems.length} items`)
+              .join(', ');
+            return `${items.length} items escalated across ${repoGroups.size} repos: ${summary}`;
+          },
+          // escalate stage: send items needing human attention
+          escalate: async (items) => {
+            humanItems = items;
+            const msg = items
+              .map((i) => `[${i.source}] ${i.summary}`)
+              .join('\n');
+            await deps.sendMessage(
+              chatJid,
+              `Items needing human attention:\n${msg}`,
+            );
+            return '';
+          },
         },
         {
-          extraTier0Args,
-          // Capture ALL classified items (routine + urgent + needs-reasoning + human)
-          onClassified: (items) => {
-            classifiedItems = items;
+          extraScriptArgs,
+          // Capture classified items via onStageComplete
+          onStageComplete: (name, stageResult) => {
+            if (name === 'classify') {
+              classifiedItems = stageResult.items as ClassifiedItem[];
+            }
           },
         },
       );
 
-      const triageSummary = `Triage complete. ${triageResult.tier0Items} items found: T1=${triageResult.tier1Classified} classified, T2=${triageResult.tier2Escalated} for processing, T3=${triageResult.tier3Human} for human review`;
+      const classifyStage = triageResult.stageResults.find(
+        (s) => s.name === 'classify',
+      );
+      const triageStage = triageResult.stageResults.find(
+        (s) => s.name === 'triage',
+      );
+      const triageSummary = `Triage complete. ${triageResult.totalItems} items found: ${classifyStage?.items.length ?? 0} classified, ${triageStage?.items.length ?? 0} for processing`;
       await deps.sendMessage(chatJid, triageSummary);
       results.push({
         phase: 'triage',
@@ -903,7 +1053,7 @@ async function runMaintenancePipeline(
         const laneTask = (async () => {
           try {
             const promptTemplate =
-              getPipelinePromptTemplate('repo-maintenance-execute') ||
+              getStagePrompt('repo-maintenance-execute', 'execute') ||
               'Process these items:\n{{items}}';
 
             // For multi-repo lanes, combine all items into one prompt
@@ -1178,6 +1328,14 @@ async function runTask(
   if (task.prompt.startsWith('pipeline:')) {
     const pipelinePrompt = task.prompt.slice('pipeline:'.length).trim();
 
+    // Acknowledge pipeline start
+    const pipelineLabel = pipelinePrompt.split(' ')[0];
+    const startMsg =
+      pipelineLabel === 'daily-briefing'
+        ? "I'm putting together your daily briefing now…"
+        : `Starting pipeline: *${pipelineLabel}* …`;
+    await deps.sendMessage(task.chat_jid, startMsg).catch(() => {});
+
     // Repo maintenance uses the phased orchestrator
     if (
       pipelinePrompt === 'repo-maintenance' ||
@@ -1199,14 +1357,37 @@ async function runTask(
     } else {
       // Other pipelines (daily-briefing, weekly-retro) use standard flow
       try {
-        const pipelineResult = await runPipeline(
-          pipelinePrompt,
-          // onTier2: spawn per-repo box-claude instances
-          async (items, _prompt) => {
-            return processTier2ViaBoxClaude(items, pipelinePrompt);
-          },
-          // onTier3: send human items to channel
-          async (items) => {
+        const isDailyBriefing = pipelinePrompt === 'daily-briefing';
+
+        // Build stage callbacks based on pipeline type
+        const stageCallbacks: Record<string, StageCallback> = {};
+
+        if (isDailyBriefing) {
+          // Daily briefing: direct API calls for reasoning and synthesis
+          stageCallbacks['reason'] = async (items, prompt) => {
+            return processTier2Direct(items, prompt);
+          };
+          stageCallbacks['synthesize'] = async (items, prompt) => {
+            return processTier2Direct(items, prompt);
+          };
+          // Post-deliver: apply claw/triaged labels after briefing is sent
+          stageCallbacks['post-deliver'] = async (items) => {
+            try {
+              await applyTriagedLabels(items);
+            } catch (labelErr) {
+              logger.warn(
+                { err: labelErr },
+                'Failed to apply post-delivery triaged labels',
+              );
+            }
+            return '';
+          };
+        } else {
+          // Weekly retro and other pipelines: use box-claude for expensive stages
+          stageCallbacks['synthesize'] = async (items, prompt) => {
+            return processTier2Direct(items, prompt);
+          };
+          stageCallbacks['escalate'] = async (items) => {
             const msg = items
               .map((i) => `[${i.source}] ${i.summary}`)
               .join('\n');
@@ -1214,12 +1395,32 @@ async function runTask(
               task.chat_jid,
               `Items needing human attention:\n${msg}`,
             );
-          },
+            return '';
+          };
+        }
+
+        const pipelineResult = await runPipeline(
+          pipelinePrompt,
+          stageCallbacks,
         );
 
-        result = formatPipelineReport(pipelineResult);
-        if (result) {
+        if (isDailyBriefing) {
+          // The briefing is the clean output of the "synthesize" stage
+          const synthesizeStage = pipelineResult.stageResults.find(
+            (s) => s.name === 'synthesize',
+          );
+          const briefing = synthesizeStage?.output?.trim();
+
+          result =
+            pipelineResult.totalItems === 0
+              ? 'No new items found — inbox is clear.'
+              : briefing || 'No items needed attention today.';
           await deps.sendMessage(task.chat_jid, result);
+        } else {
+          result = formatPipelineReport(pipelineResult);
+          if (result) {
+            await deps.sendMessage(task.chat_jid, result);
+          }
         }
       } catch (err) {
         error = err instanceof Error ? err.message : String(err);
@@ -1228,6 +1429,16 @@ async function runTask(
           'Pipeline failed',
         );
       }
+    }
+
+    // Notify user of pipeline errors
+    if (error) {
+      await deps
+        .sendMessage(
+          task.chat_jid,
+          `Pipeline *${pipelineLabel}* failed: ${error}`,
+        )
+        .catch(() => {});
     }
 
     const durationMs = Date.now() - startTime;
@@ -1338,7 +1549,540 @@ async function runTask(
   updateTaskAfterRun(task.id, nextRun, resultSummary);
 }
 
+// ---------------------------------------------------------------------------
+// Startup sync: ensure scheduled repo maintenance tasks exist from config
+// ---------------------------------------------------------------------------
+
+const DAY_CRON_MAP: Record<string, { cron: string; dayNum: number }> = {
+  monday: { cron: '1 0 * * 1', dayNum: 1 },
+  tuesday: { cron: '1 0 * * 2', dayNum: 2 },
+  wednesday: { cron: '1 0 * * 3', dayNum: 3 },
+  thursday: { cron: '1 0 * * 4', dayNum: 4 },
+  friday: { cron: '1 0 * * 5', dayNum: 5 },
+  saturday: { cron: '1 0 * * 6', dayNum: 6 },
+  sunday: { cron: '1 0 * * 0', dayNum: 0 },
+};
+
+/**
+ * Sync scheduled repo maintenance tasks from config/private.yaml.
+ *
+ * For each day in repoMaintenance.scheduledRepos, ensures a cron task
+ * exists with the right repos. Creates missing tasks, updates prompts
+ * if the repo list changed, and leaves existing matching tasks alone.
+ */
+function syncScheduledRepoMaintenance(): void {
+  const configPath = path.join(process.cwd(), 'config', 'private.yaml');
+  if (!fs.existsSync(configPath)) {
+    logger.debug('No config/private.yaml found, skipping scheduled repo sync');
+    return;
+  }
+
+  let config: {
+    repoMaintenance?: {
+      dailyRepos?: string[];
+      scheduledRepos?: Record<string, string[]>;
+    };
+  };
+  try {
+    config = parseYaml(fs.readFileSync(configPath, 'utf-8'));
+  } catch (err) {
+    logger.warn(
+      { err },
+      'Failed to parse config/private.yaml for scheduled repo sync',
+    );
+    return;
+  }
+
+  const dailyRepos = config?.repoMaintenance?.dailyRepos;
+  const scheduledRepos = config?.repoMaintenance?.scheduledRepos;
+  if (
+    (!scheduledRepos || Object.keys(scheduledRepos).length === 0) &&
+    (!dailyRepos || dailyRepos.length === 0)
+  ) {
+    logger.debug('No dailyRepos or scheduledRepos in config, skipping sync');
+    return;
+  }
+
+  // Find the main group's JID for task ownership
+  const groups = getAllRegisteredGroups();
+  let mainJid: string | null = null;
+  let mainFolder: string | null = null;
+  for (const [jid, group] of Object.entries(groups)) {
+    if (group.isMain) {
+      mainJid = jid;
+      mainFolder = group.folder;
+      break;
+    }
+  }
+  if (!mainJid || !mainFolder) {
+    logger.warn('No main group registered yet, deferring scheduled repo sync');
+    return;
+  }
+
+  const existingTasks = getAllTasks();
+  const existingById = new Map(existingTasks.map((t) => [t.id, t]));
+
+  // --- Daily repos: single cron task running every day at 12:01 AM ---
+  if (dailyRepos && dailyRepos.length > 0) {
+    const taskId = 'repo-maint-daily';
+    const repoList = dailyRepos.join(',');
+    const prompt = `pipeline:repo-maintenance --repos ${repoList}`;
+    const cronExpr = '1 0 * * *'; // 12:01 AM every day
+
+    const existing = existingById.get(taskId);
+    if (existing) {
+      if (existing.prompt !== prompt) {
+        updateTask(taskId, { prompt });
+        logger.info(
+          { taskId, repos: dailyRepos.length },
+          'Updated daily repo maintenance task (repo list changed)',
+        );
+      }
+      if (existing.status !== 'active') {
+        updateTask(taskId, { status: 'active' });
+      }
+    } else {
+      const interval = CronExpressionParser.parse(cronExpr, { tz: TIMEZONE });
+      const nextRun = interval.next().toISOString();
+
+      createTask({
+        id: taskId,
+        group_folder: mainFolder,
+        chat_jid: mainJid,
+        prompt,
+        schedule_type: 'cron',
+        schedule_value: cronExpr,
+        context_mode: 'isolated',
+        next_run: nextRun,
+        status: 'active',
+        created_at: new Date().toISOString(),
+      });
+
+      logger.info(
+        { taskId, repos: dailyRepos.length, nextRun },
+        'Created daily repo maintenance task',
+      );
+    }
+  }
+
+  // --- Per-day scheduled repos: one cron task per weekday ---
+  if (!scheduledRepos || Object.keys(scheduledRepos).length === 0) return;
+
+  for (const [day, repos] of Object.entries(scheduledRepos)) {
+    const dayLower = day.toLowerCase();
+    const dayInfo = DAY_CRON_MAP[dayLower];
+    if (!dayInfo || !Array.isArray(repos) || repos.length === 0) continue;
+
+    const taskId = `repo-maint-scheduled-${dayLower}`;
+    const repoList = repos.join(',');
+    const prompt = `pipeline:repo-maintenance --repos ${repoList}`;
+
+    const existing = existingById.get(taskId);
+    if (existing) {
+      // Update prompt if repo list changed
+      if (existing.prompt !== prompt) {
+        updateTask(taskId, { prompt });
+        logger.info(
+          { taskId, day: dayLower, repos: repos.length },
+          'Updated scheduled repo maintenance task (repo list changed)',
+        );
+      }
+      // Re-activate if it was paused/completed
+      if (existing.status !== 'active') {
+        updateTask(taskId, { status: 'active' });
+      }
+      continue;
+    }
+
+    // Compute first next_run from the cron expression
+    const interval = CronExpressionParser.parse(dayInfo.cron, { tz: TIMEZONE });
+    const nextRun = interval.next().toISOString();
+
+    createTask({
+      id: taskId,
+      group_folder: mainFolder,
+      chat_jid: mainJid,
+      prompt,
+      schedule_type: 'cron',
+      schedule_value: dayInfo.cron,
+      context_mode: 'isolated',
+      next_run: nextRun,
+      status: 'active',
+      created_at: new Date().toISOString(),
+    });
+
+    logger.info(
+      { taskId, day: dayLower, repos: repos.length, nextRun },
+      'Created scheduled repo maintenance task',
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Post-pipeline: apply Gmail labels for email triage dedup
+// ---------------------------------------------------------------------------
+
+const GMAIL_WRAPPER_PATH =
+  process.env.GMAIL_WRAPPER_PATH ||
+  path.join(
+    os.homedir(),
+    '.openclaw',
+    'workspace',
+    'scripts',
+    'gmail_wrapper.py',
+  );
+
+const EMAIL_ACTION_GUARD_PATH = path.join(
+  process.cwd(),
+  'scripts',
+  'email-action-guard.py',
+);
+
+/**
+ * Parse Tier 2 output for label_actions JSON and apply Gmail labels.
+ *
+ * Expects a JSON block in the pipeline result like:
+ * ```json
+ * {"label_actions": [{"messageId": "abc", "label": "claw/triaged"}]}
+ * ```
+ */
+async function applyEmailTriageLabels(pipelineResult: string): Promise<void> {
+  // Extract JSON block from the result
+  const jsonMatch = pipelineResult.match(
+    /\{[\s\S]*?"label_actions"\s*:\s*\[[\s\S]*?\]\s*\}/,
+  );
+  if (!jsonMatch) {
+    logger.debug('No label_actions found in pipeline result');
+    return;
+  }
+
+  let labelActions: { messageId: string; label: string }[];
+  try {
+    const parsed = JSON.parse(jsonMatch[0]);
+    labelActions = parsed.label_actions;
+  } catch {
+    logger.warn('Failed to parse label_actions JSON from pipeline result');
+    return;
+  }
+
+  if (!Array.isArray(labelActions) || labelActions.length === 0) return;
+
+  // Ensure claw/* labels exist (create once, errors are fine if they exist)
+  const uniqueLabels = [...new Set(labelActions.map((a) => a.label))];
+  for (const label of uniqueLabels) {
+    try {
+      execFile('python3', [
+        GMAIL_WRAPPER_PATH,
+        'label-create',
+        '--name',
+        label,
+      ]);
+    } catch {
+      // Label likely already exists
+    }
+  }
+
+  // Apply labels via the action guard (safety net)
+  const wrapperScript = fs.existsSync(EMAIL_ACTION_GUARD_PATH)
+    ? EMAIL_ACTION_GUARD_PATH
+    : GMAIL_WRAPPER_PATH;
+
+  let applied = 0;
+  for (const action of labelActions) {
+    if (!action.messageId || !action.label) continue;
+    // Strip "gmail-" prefix if the model used the WorkItem ID instead of the raw Gmail ID
+    if (action.messageId.startsWith('gmail-')) {
+      action.messageId = action.messageId.slice(6);
+    }
+    // Only allow claw/* labels in this automated step
+    if (
+      !action.label.startsWith('claw/') &&
+      !action.label.startsWith('claw-')
+    ) {
+      logger.warn(
+        { label: action.label },
+        'Skipping non-claw label in post-pipeline step',
+      );
+      continue;
+    }
+
+    try {
+      const result = await new Promise<void>((resolve, reject) => {
+        execFile(
+          'python3',
+          [
+            wrapperScript,
+            'label-add',
+            '--id',
+            action.messageId,
+            '--labels',
+            action.label,
+          ],
+          { timeout: 15000 },
+          (err) => {
+            if (err) reject(err);
+            else resolve();
+          },
+        );
+      });
+      applied++;
+    } catch (err) {
+      logger.warn(
+        { messageId: action.messageId, label: action.label, err },
+        'Failed to apply email label',
+      );
+    }
+  }
+
+  if (applied > 0) {
+    logger.info(
+      { applied, total: labelActions.length },
+      'Applied post-pipeline email labels',
+    );
+  }
+}
+
+/**
+ * Apply claw/triaged labels to all gmail items after successful briefing delivery.
+ * This is called from the "post-deliver" callback stage.
+ */
+async function applyTriagedLabels(
+  items: (import('tickle-stick').WorkItem | ClassifiedItem)[],
+): Promise<void> {
+  const gmailIds = items
+    .filter((i) => i.source === 'gmail' && i.id.startsWith('gmail-'))
+    .map((i) => i.id.slice(6));
+
+  if (gmailIds.length === 0) return;
+
+  try {
+    await applyEmailTriageLabels(
+      JSON.stringify({
+        label_actions: gmailIds.map((id) => ({
+          messageId: id,
+          label: 'claw/triaged',
+        })),
+      }),
+    );
+  } catch (err) {
+    logger.warn({ err }, 'Failed to apply triaged labels');
+  }
+}
+
+/**
+ * Sync the daily briefing task from config/private.yaml.
+ *
+ * Reads dailyBriefing.enabled and dailyBriefing.cron, then creates or
+ * updates a cron task for the daily-briefing pipeline.
+ */
+function syncDailyBriefing(): void {
+  const configPath = path.join(process.cwd(), 'config', 'private.yaml');
+  if (!fs.existsSync(configPath)) return;
+
+  let config: {
+    dailyBriefing?: {
+      enabled?: boolean;
+      cron?: string;
+    };
+  };
+  try {
+    config = parseYaml(fs.readFileSync(configPath, 'utf-8'));
+  } catch (err) {
+    logger.warn(
+      { err },
+      'Failed to parse config/private.yaml for daily briefing sync',
+    );
+    return;
+  }
+
+  const briefingConfig = config?.dailyBriefing;
+  if (!briefingConfig?.enabled) {
+    logger.debug('Daily briefing not enabled in config, skipping sync');
+    return;
+  }
+
+  const groups = getAllRegisteredGroups();
+  let mainJid: string | null = null;
+  let mainFolder: string | null = null;
+  for (const [jid, group] of Object.entries(groups)) {
+    if (group.isMain) {
+      mainJid = jid;
+      mainFolder = group.folder;
+      break;
+    }
+  }
+  if (!mainJid || !mainFolder) {
+    logger.warn('No main group registered yet, deferring daily briefing sync');
+    return;
+  }
+
+  const taskId = 'daily-briefing';
+  const cronExpr = briefingConfig.cron || '0 6 * * *';
+  const prompt = 'pipeline:daily-briefing';
+
+  const existingTasks = getAllTasks();
+  const existing = existingTasks.find((t) => t.id === taskId);
+
+  if (existing) {
+    // Update cron if changed
+    if (existing.schedule_value !== cronExpr) {
+      const interval = CronExpressionParser.parse(cronExpr, { tz: TIMEZONE });
+      const nextRun = interval.next().toISOString();
+      updateTask(taskId, { schedule_value: cronExpr, next_run: nextRun });
+      logger.info(
+        { taskId, cron: cronExpr, nextRun },
+        'Updated daily briefing schedule',
+      );
+    }
+    if (existing.status !== 'active') {
+      updateTask(taskId, { status: 'active' });
+    }
+    return;
+  }
+
+  const interval = CronExpressionParser.parse(cronExpr, { tz: TIMEZONE });
+  const nextRun = interval.next().toISOString();
+
+  createTask({
+    id: taskId,
+    group_folder: mainFolder,
+    chat_jid: mainJid,
+    prompt,
+    schedule_type: 'cron',
+    schedule_value: cronExpr,
+    context_mode: 'isolated',
+    next_run: nextRun,
+    status: 'active',
+    created_at: new Date().toISOString(),
+  });
+
+  logger.info(
+    { taskId, cron: cronExpr, nextRun },
+    'Created daily briefing task',
+  );
+}
+
+function syncWeeklyRetro(): void {
+  const configPath = path.join(process.cwd(), 'config', 'private.yaml');
+  if (!fs.existsSync(configPath)) return;
+
+  let config: { weeklyRetro?: { enabled?: boolean; cron?: string } };
+  try {
+    config = parseYaml(fs.readFileSync(configPath, 'utf-8'));
+  } catch {
+    return;
+  }
+
+  const retroConfig = config?.weeklyRetro;
+  if (!retroConfig?.enabled) return;
+
+  const groups = getAllRegisteredGroups();
+  let mainJid: string | null = null;
+  let mainFolder: string | null = null;
+  for (const [jid, group] of Object.entries(groups)) {
+    if (group.isMain) {
+      mainJid = jid;
+      mainFolder = group.folder;
+      break;
+    }
+  }
+  if (!mainJid || !mainFolder) return;
+
+  const taskId = 'weekly-retro';
+  const cronExpr = retroConfig.cron || '0 18 * * 5';
+  const prompt = 'pipeline:weekly-retro';
+
+  const existingTasks = getAllTasks();
+  const existing = existingTasks.find((t) => t.id === taskId);
+
+  if (existing) {
+    if (existing.schedule_value !== cronExpr) {
+      const interval = CronExpressionParser.parse(cronExpr, { tz: TIMEZONE });
+      const nextRun = interval.next().toISOString();
+      updateTask(taskId, { schedule_value: cronExpr, next_run: nextRun });
+      logger.info(
+        { taskId, cron: cronExpr, nextRun },
+        'Updated weekly retro schedule',
+      );
+    }
+    if (existing.status !== 'active') {
+      updateTask(taskId, { status: 'active' });
+    }
+    return;
+  }
+
+  const interval = CronExpressionParser.parse(cronExpr, { tz: TIMEZONE });
+  const nextRun = interval.next().toISOString();
+
+  createTask({
+    id: taskId,
+    group_folder: mainFolder,
+    chat_jid: mainJid,
+    prompt,
+    schedule_type: 'cron',
+    schedule_value: cronExpr,
+    context_mode: 'isolated',
+    next_run: nextRun,
+    status: 'active',
+    created_at: new Date().toISOString(),
+  });
+
+  logger.info({ taskId, cron: cronExpr, nextRun }, 'Created weekly retro task');
+}
+
 let schedulerRunning = false;
+
+/** Saved deps for on-demand pipeline triggers. */
+let savedSchedulerDeps: SchedulerDependencies | null = null;
+
+/**
+ * Trigger a pipeline on demand (e.g. from a Slack message).
+ * Creates a one-shot task and immediately enqueues it.
+ */
+export function triggerPipelineNow(
+  pipelinePrompt: string,
+  chatJid: string,
+  groupFolder: string,
+): boolean {
+  if (!savedSchedulerDeps) return false;
+
+  const taskId = `on-demand-${Date.now()}`;
+  const now = new Date().toISOString();
+
+  createTask({
+    id: taskId,
+    group_folder: groupFolder,
+    chat_jid: chatJid,
+    prompt: `pipeline:${pipelinePrompt}`,
+    schedule_type: 'once',
+    schedule_value: now,
+    context_mode: 'isolated',
+    next_run: now,
+    status: 'active',
+    created_at: now,
+  });
+
+  const task: ScheduledTask = {
+    id: taskId,
+    group_folder: groupFolder,
+    chat_jid: chatJid,
+    prompt: `pipeline:${pipelinePrompt}`,
+    schedule_type: 'once',
+    schedule_value: now,
+    context_mode: 'isolated',
+    next_run: now,
+    status: 'active',
+    created_at: now,
+    last_run: null as unknown as string,
+    last_result: null as unknown as string,
+  };
+
+  savedSchedulerDeps.queue.enqueueTask(chatJid, taskId, () =>
+    runTask(task, savedSchedulerDeps!),
+  );
+
+  return true;
+}
 
 export function startSchedulerLoop(deps: SchedulerDependencies): void {
   if (schedulerRunning) {
@@ -1346,6 +2090,27 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
     return;
   }
   schedulerRunning = true;
+  savedSchedulerDeps = deps;
+
+  // Sync config-driven scheduled tasks before starting the poll loop
+  try {
+    syncScheduledRepoMaintenance();
+  } catch (err) {
+    logger.error({ err }, 'Failed to sync scheduled repo maintenance tasks');
+  }
+
+  try {
+    syncDailyBriefing();
+  } catch (err) {
+    logger.error({ err }, 'Failed to sync daily briefing task');
+  }
+
+  try {
+    syncWeeklyRetro();
+  } catch (err) {
+    logger.error({ err }, 'Failed to sync weekly retro task');
+  }
+
   logger.info('Scheduler loop started');
 
   const loop = async () => {
