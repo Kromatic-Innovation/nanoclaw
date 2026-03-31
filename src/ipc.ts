@@ -8,6 +8,7 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
+import { processCalendarIpc } from './calendar-ipc.js';
 import { processGithubIssuesIpc } from './github-issues-ipc.js';
 import { processRemindersIpc } from './reminders-ipc.js';
 import { RegisteredGroup } from './types.js';
@@ -163,6 +164,13 @@ export function startIpcWatcher(deps: IpcDeps): void {
           { err, sourceGroup },
           'Error processing github-issues IPC',
         );
+      }
+
+      // Process Google Calendar IPC requests (request-response bridge)
+      try {
+        processCalendarIpc(path.join(ipcBaseDir, sourceGroup));
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Error processing calendar IPC');
       }
     }
 
