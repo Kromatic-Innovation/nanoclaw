@@ -551,6 +551,35 @@ async function runQuery(
 
     if (message.type === 'assistant' && 'uuid' in message) {
       lastAssistantUuid = (message as { uuid: string }).uuid;
+
+      // Extract tool calls from assistant message and write status updates
+      const content = (message as { content?: unknown[] }).content;
+      if (Array.isArray(content)) {
+        const statusDir = '/workspace/ipc/status';
+        for (const block of content) {
+          const b = block as { type?: string; name?: string };
+          if (b.type === 'tool_use' && b.name) {
+            const statusFile = path.join(
+              statusDir,
+              `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`,
+            );
+            try {
+              fs.mkdirSync(statusDir, { recursive: true });
+              const tmpFile = `${statusFile}.tmp`;
+              fs.writeFileSync(
+                tmpFile,
+                JSON.stringify({
+                  tool: b.name,
+                  timestamp: new Date().toISOString(),
+                }),
+              );
+              fs.renameSync(tmpFile, statusFile);
+            } catch {
+              // Best-effort — don't fail the query for status updates
+            }
+          }
+        }
+      }
     }
 
     if (message.type === 'system' && message.subtype === 'init') {

@@ -17,6 +17,36 @@ import { processSentryIpc } from './sentry-ipc.js';
 import { processSpotifyIpc } from './spotify-ipc.js';
 import { RegisteredGroup } from './types.js';
 
+/**
+ * Convert an MCP tool name to a human-readable status label.
+ * e.g. "mcp__google-calendar__list_events" → "Checking calendar…"
+ */
+function formatToolLabel(toolName: string): string {
+  // Strip MCP prefix (mcp__server__tool → tool)
+  const parts = toolName.split('__');
+  const server = parts.length >= 2 ? parts[parts.length - 2] : '';
+  const tool = parts.length >= 2 ? parts[parts.length - 1] : toolName;
+
+  const labels: Record<string, string> = {
+    'google-calendar': 'Checking calendar',
+    gmail: 'Checking email',
+    'google-maps': 'Looking up directions',
+    sentry: 'Checking Sentry',
+    spotify: 'Checking Spotify',
+    'apple-reminders': 'Checking reminders',
+    'github-issues': 'Checking GitHub',
+  };
+
+  const serverLabel = labels[server];
+  if (serverLabel) return `${serverLabel}…`;
+
+  // Fallback: humanize the tool name
+  const humanized = (tool || toolName)
+    .replace(/_/g, ' ')
+    .replace(/^(mcp|list|get|search|create|update|send|draft)/, (m) => m);
+  return `Using ${humanized}…`;
+}
+
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
@@ -203,6 +233,42 @@ export function startIpcWatcher(deps: IpcDeps): void {
         processSpotifyIpc(path.join(ipcBaseDir, sourceGroup));
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error processing spotify IPC');
+      }
+
+      // Process status updates from container (tool call notifications)
+      try {
+        const statusDir = path.join(ipcBaseDir, sourceGroup, 'status');
+        if (fs.existsSync(statusDir)) {
+          const statusFiles = fs
+            .readdirSync(statusDir)
+            .filter((f) => f.endsWith('.json'));
+          for (const file of statusFiles) {
+            const filePath = path.join(statusDir, file);
+            try {
+              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              fs.unlinkSync(filePath);
+              if (data.tool) {
+                // Find the chatJid for this group folder
+                const chatJid = Object.entries(registeredGroups).find(
+                  ([, g]) => g.folder === sourceGroup,
+                )?.[0];
+                if (chatJid) {
+                  const label = formatToolLabel(data.tool);
+                  deps.sendMessage(chatJid, `_${label}_`).catch(() => {});
+                }
+              }
+            } catch (err) {
+              logger.debug({ file, err }, 'Error processing status file');
+              try {
+                fs.unlinkSync(filePath);
+              } catch {
+                /* ignore */
+              }
+            }
+          }
+        }
+      } catch {
+        // Best-effort — status updates are non-critical
       }
     }
 
