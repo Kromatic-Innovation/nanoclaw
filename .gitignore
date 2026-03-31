@@ -26,6 +26,9 @@ config/private.yaml
 # Temp files
 .tmp-*
 
+# Python
+__pycache__/
+
 # OS
 .DS_Store
 
