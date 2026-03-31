@@ -11,6 +11,7 @@ import { logger } from './logger.js';
 import { processCalendarIpc } from './calendar-ipc.js';
 import { processGithubIssuesIpc } from './github-issues-ipc.js';
 import { processGmailIpc } from './gmail-ipc.js';
+import { processMapsIpc } from './maps-ipc.js';
 import { processRemindersIpc } from './reminders-ipc.js';
 import { processSentryIpc } from './sentry-ipc.js';
 import { RegisteredGroup } from './types.js';
@@ -187,6 +188,13 @@ export function startIpcWatcher(deps: IpcDeps): void {
         processSentryIpc(path.join(ipcBaseDir, sourceGroup));
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error processing sentry IPC');
+      }
+
+      // Process Google Maps IPC requests (request-response bridge)
+      try {
+        processMapsIpc(path.join(ipcBaseDir, sourceGroup));
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Error processing maps IPC');
       }
     }
 
