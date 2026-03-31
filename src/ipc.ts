@@ -12,6 +12,7 @@ import { processCalendarIpc } from './calendar-ipc.js';
 import { processGithubIssuesIpc } from './github-issues-ipc.js';
 import { processGmailIpc } from './gmail-ipc.js';
 import { processRemindersIpc } from './reminders-ipc.js';
+import { processSentryIpc } from './sentry-ipc.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
@@ -179,6 +180,13 @@ export function startIpcWatcher(deps: IpcDeps): void {
         processGmailIpc(path.join(ipcBaseDir, sourceGroup));
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error processing gmail IPC');
+      }
+
+      // Process Sentry IPC requests (request-response bridge)
+      try {
+        processSentryIpc(path.join(ipcBaseDir, sourceGroup));
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Error processing sentry IPC');
       }
     }
 
