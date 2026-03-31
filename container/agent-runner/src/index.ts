@@ -375,6 +375,11 @@ async function runQuery(
   mcpServerPath: string,
   remindersMcpPath: string,
   githubIssuesMcpPath: string,
+  calendarMcpPath: string,
+  gmailMcpPath: string,
+  sentryMcpPath: string,
+  mapsMcpPath: string,
+  spotifyMcpPath: string,
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
@@ -471,6 +476,11 @@ async function runQuery(
         'mcp__nanoclaw__*',
         'mcp__apple-reminders__*',
         'mcp__github-issues__*',
+        'mcp__google-calendar__*',
+        'mcp__gmail__*',
+        'mcp__sentry__*',
+        'mcp__google-maps__*',
+        'mcp__spotify__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -498,6 +508,31 @@ async function runQuery(
             GITHUB_OWNER: process.env.GITHUB_OWNER || '',
             GITHUB_REPO: process.env.GITHUB_REPO || '',
           },
+        },
+        'google-calendar': {
+          command: 'node',
+          args: [calendarMcpPath],
+          env: {},
+        },
+        gmail: {
+          command: 'node',
+          args: [gmailMcpPath],
+          env: {},
+        },
+        sentry: {
+          command: 'node',
+          args: [sentryMcpPath],
+          env: {},
+        },
+        'google-maps': {
+          command: 'node',
+          args: [mapsMcpPath],
+          env: {},
+        },
+        spotify: {
+          command: 'node',
+          args: [spotifyMcpPath],
+          env: {},
         },
       },
       hooks: {
@@ -591,6 +626,11 @@ async function main(): Promise<void> {
     __dirname,
     'github-issues-mcp-stdio.js',
   );
+  const calendarMcpPath = path.join(__dirname, 'calendar-mcp-stdio.js');
+  const gmailMcpPath = path.join(__dirname, 'gmail-mcp-stdio.js');
+  const sentryMcpPath = path.join(__dirname, 'sentry-mcp-stdio.js');
+  const mapsMcpPath = path.join(__dirname, 'maps-mcp-stdio.js');
+  const spotifyMcpPath = path.join(__dirname, 'spotify-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
@@ -627,6 +667,11 @@ async function main(): Promise<void> {
         mcpServerPath,
         remindersMcpPath,
         githubIssuesMcpPath,
+        calendarMcpPath,
+        gmailMcpPath,
+        sentryMcpPath,
+        mapsMcpPath,
+        spotifyMcpPath,
         containerInput,
         sdkEnv,
         resumeAt,
