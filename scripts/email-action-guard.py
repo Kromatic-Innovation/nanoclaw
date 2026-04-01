@@ -59,6 +59,9 @@ COMMAND_PERMISSION_MAP = {
 # claw/* labels are always allowed (internal bookkeeping)
 CLAW_LABEL_PREFIX = "claw"
 
+# Archive (remove INBOX label) is always allowed — it's non-destructive
+ARCHIVE_COMMANDS = {"archive"}
+
 
 def log(message: str) -> None:
     print(f"[email-action-guard] {message}", file=sys.stderr, flush=True)
@@ -147,6 +150,10 @@ def check_permission(args: list[str]) -> tuple[bool, str]:
     # Read-only commands are always allowed
     if command in READ_ONLY_COMMANDS:
         return True, f"read-only command: {command}"
+
+    # Archive is always allowed (non-destructive — just removes INBOX label)
+    if command in ARCHIVE_COMMANDS:
+        return True, f"archive is always allowed (non-destructive)"
 
     # claw/* label operations are always allowed
     if is_claw_label_operation(args):

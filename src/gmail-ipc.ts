@@ -248,6 +248,33 @@ async function handleRequest(req: GmailRequest): Promise<unknown> {
       );
     }
 
+    case 'archive_messages': {
+      if (
+        !args.message_ids ||
+        !Array.isArray(args.message_ids) ||
+        args.message_ids.length === 0
+      )
+        throw new Error('message_ids array is required');
+      // Archive = remove INBOX label. Non-destructive, bypasses guard.
+      const results = [];
+      for (const msgId of args.message_ids) {
+        try {
+          const result = await runGmailCmd(
+            ['label-remove', '--id', String(msgId), '--labels', 'INBOX'],
+            false,
+          );
+          results.push({ message_id: msgId, status: 'archived', result });
+        } catch (err) {
+          results.push({
+            message_id: msgId,
+            status: 'error',
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      return results;
+    }
+
     default:
       throw new Error(`Unknown gmail tool: ${tool}`);
   }

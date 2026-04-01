@@ -185,5 +185,14 @@ server.tool(
   async (args) => textResult(await ipcRequest('remove_labels', args)),
 );
 
+server.tool(
+  'archive_messages',
+  'Archive emails (remove from inbox). Always allowed — this is non-destructive.',
+  {
+    message_ids: z.array(z.string()).describe('Message IDs to archive'),
+  },
+  async (args) => textResult(await ipcRequest('archive_messages', args)),
+);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);

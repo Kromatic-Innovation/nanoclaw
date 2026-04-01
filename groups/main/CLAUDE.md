@@ -269,3 +269,81 @@ When scheduling tasks for other groups, use the `target_group_jid` parameter wit
 - `schedule_task(prompt: "...", schedule_type: "cron", schedule_value: "0 9 * * 1", target_group_jid: "120363336345536173@g.us")`
 
 The task will run in that group's context with access to their files and memory.
+
+---
+
+## Email Triage System
+
+A daily briefing pipeline runs at 06:00 AM that triages Tristan's email. It uses a Google Sheet as its rule database. You can read and modify the rules using the `mcp__google-sheets__*` tools.
+
+### How the Pipeline Works
+
+1. **Tier 0 (free):** Fetches unread Gmail, looks up each sender in the spreadsheet, applies programmatic rules
+2. **Tier 1 (cheap model):** Classifies emails as routine/spam vs needs-reasoning
+3. **Tier 2 (expensive model):** Per-email reasoning — drafts replies, escalates, or archives based on contact permissions
+4. **Post-processing:** Applies Gmail labels (`claw/triaged`, `claw/drafted`, etc.) so emails aren't reprocessed
+
+### Spreadsheet Structure (4 tabs)
+
+**Tab 1: Email Contacts** — Specific sender rules. Use this when Tristan says "for emails from X, do Y."
+
+| Column           | Purpose                                                                          |
+| ---------------- | -------------------------------------------------------------------------------- |
+| email            | Email address or pattern (e.g. `frank@esmt.org`, `*@acme.com`)                   |
+| name             | Contact name                                                                     |
+| tags             | Comma-separated tags (e.g. `client,ai-friendly`) — maps to actions via Tag Rules |
+| allowed_actions  | Override: explicit actions for this contact (e.g. `draft,send`)                  |
+| drafting_context | Tone/style for replies (e.g. "polite business tone, use first name")             |
+| notes            | Free-text notes                                                                  |
+
+**Tab 2: Tag Rules** — General category rules. Use this when Tristan says "for all X-type emails, do Y."
+
+| Column          | Purpose                                                                          |
+| --------------- | -------------------------------------------------------------------------------- |
+| tag             | Tag name (e.g. `client`, `friend`, `vendor`, `mailing-list`)                     |
+| allowed_actions | Actions allowed for this tag: `draft`, `send`, `add-label`, `delete`, `escalate` |
+| description     | What this tag means                                                              |
+
+**Tab 3: Triage Log** — Audit trail of all triage decisions (read-only for review).
+
+**Tab 4: Programmatic Rules** — Automatic pattern matching. Use this when Tristan says "emails that match X should be categorized as Y."
+
+| Column      | Purpose                                                                         |
+| ----------- | ------------------------------------------------------------------------------- |
+| rule_id     | Auto-generated ID                                                               |
+| condition   | Pattern: `from_domain:`, `from_email:`, `subject_contains:`, `has_unsubscribe:` |
+| action      | Category to assign (e.g. `spam`, `mailing-list`, `urgent`)                      |
+| description | What this rule does                                                             |
+
+### Which Tab to Use
+
+When Tristan tells you an email rule, decide which tab it belongs in:
+
+- **"For emails from frank@esmt.org, draft a polite reply"** → **Email Contacts** (specific sender). Add with `add_contact`.
+- **"For emails from anyone at acme.com, you can send replies"** → **Email Contacts** with wildcard pattern `*@acme.com`.
+- **"For all client emails, you can draft replies"** → **Tag Rules** (general category). Add with `add_tag_rule`.
+- **"Emails with 'unsubscribe' in the subject are mailing lists"** → **Programmatic Rules** (pattern match). Add with `add_rule`.
+- **"Mark newsletters as mailing-list"** → **Programmatic Rules** with condition `subject_contains:newsletter`.
+
+### Available Tools
+
+- `mcp__google-sheets__lookup_contact` — Look up a contact by email
+- `mcp__google-sheets__list_contacts` — List all contacts
+- `mcp__google-sheets__add_contact` — Add a sender-specific rule
+- `mcp__google-sheets__update_contact` — Update an existing contact
+- `mcp__google-sheets__list_tag_rules` — List all tag → action mappings
+- `mcp__google-sheets__add_tag_rule` — Add a general tag rule
+- `mcp__google-sheets__list_rules` — List all programmatic rules
+- `mcp__google-sheets__add_rule` — Add a pattern-matching rule
+- `mcp__google-sheets__get_triage_log` — Review recent triage decisions
+
+### Action Types
+
+| Action      | What it means                                                                                |
+| ----------- | -------------------------------------------------------------------------------------------- |
+| `draft`     | Pipeline can draft a reply (saved as Gmail draft, not sent)                                  |
+| `send`      | Pipeline can send a reply directly (trusted contacts only)                                   |
+| `add-label` | Pipeline can add/remove Gmail labels                                                         |
+| `archive`   | Remove from inbox — always allowed, no permission needed. Use `mcp__gmail__archive_messages` |
+| `delete`    | Pipeline can delete the email (mailing lists, spam)                                          |
+| `escalate`  | Pipeline flags for human review (default for unknown contacts)                               |

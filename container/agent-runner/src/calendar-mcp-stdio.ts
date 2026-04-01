@@ -95,6 +95,10 @@ server.tool(
       .describe('Calendar ID (default: primary)'),
     description: z.string().optional().describe('Event description'),
     location: z.string().optional().describe('Event location'),
+    free: z
+      .boolean()
+      .optional()
+      .describe('Show as Free (true) or Busy (false, default)'),
   },
   async (args) => textResult(await ipcRequest('create_event', args)),
 );
@@ -113,6 +117,10 @@ server.tool(
     end: z.string().optional().describe('New end time (ISO 8601)'),
     description: z.string().optional().describe('New description'),
     location: z.string().optional().describe('New location'),
+    free: z
+      .boolean()
+      .optional()
+      .describe('Show as Free (true) or Busy (false/default)'),
   },
   async (args) => textResult(await ipcRequest('update_event', args)),
 );

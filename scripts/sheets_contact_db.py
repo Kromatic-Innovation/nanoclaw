@@ -387,6 +387,157 @@ def apply_programmatic_rules(
 
 
 # ---------------------------------------------------------------------------
+# List / add / update contacts
+# ---------------------------------------------------------------------------
+
+
+def list_contacts() -> list[dict]:
+    """List all contacts from the Email Contacts sheet."""
+    rows = read_sheet(TAB_CONTACTS)
+    if len(rows) < 2:
+        return []
+    header = [h.strip().lower() for h in rows[0]]
+    contacts = []
+    for row in rows[1:]:
+        contact = {}
+        for i, col in enumerate(header):
+            contact[col] = row[i].strip() if i < len(row) else ""
+        if contact.get("email"):
+            contacts.append(contact)
+    return contacts
+
+
+def add_contact(data: dict) -> dict:
+    """Add a new contact row to the Email Contacts sheet."""
+    row = [
+        data.get("email", ""),
+        data.get("name", ""),
+        data.get("tags", ""),
+        data.get("allowed_actions", ""),
+        data.get("drafting_context", ""),
+        data.get("notes", ""),
+    ]
+    append_rows(TAB_CONTACTS, [row])
+    return {"status": "added", "email": data.get("email", "")}
+
+
+def update_contact(email_addr: str, data: dict) -> dict:
+    """Update an existing contact row by email. Rewrites the full sheet."""
+    rows = read_sheet(TAB_CONTACTS)
+    if len(rows) < 2:
+        return {"status": "not_found", "email": email_addr}
+
+    header = [h.strip().lower() for h in rows[0]]
+    email_col = header.index("email") if "email" in header else 0
+    email_lower = email_addr.strip().lower()
+    found = False
+
+    for i, row in enumerate(rows[1:], start=1):
+        if len(row) > email_col and row[email_col].strip().lower() == email_lower:
+            # Update fields that are provided
+            field_map = {
+                "name": header.index("name") if "name" in header else 1,
+                "tags": header.index("tags") if "tags" in header else 2,
+                "allowed_actions": header.index("allowed_actions") if "allowed_actions" in header else 3,
+                "drafting_context": header.index("drafting_context") if "drafting_context" in header else 4,
+                "notes": header.index("notes") if "notes" in header else 5,
+            }
+            for field, col_idx in field_map.items():
+                if field in data:
+                    while len(rows[i]) <= col_idx:
+                        rows[i].append("")
+                    rows[i][col_idx] = data[field]
+            found = True
+            break
+
+    if not found:
+        return {"status": "not_found", "email": email_addr}
+
+    # Write back entire sheet
+    encoded_tab = urllib.parse.quote(TAB_CONTACTS)
+    sheets_request(
+        "PUT",
+        f"/values/{encoded_tab}",
+        params={"valueInputOption": "USER_ENTERED"},
+        payload={"values": rows},
+    )
+    return {"status": "updated", "email": email_addr}
+
+
+# ---------------------------------------------------------------------------
+# Tag rules management
+# ---------------------------------------------------------------------------
+
+
+def list_tag_rules_full() -> list[dict]:
+    """List all tag rules with full details."""
+    rows = read_sheet(TAB_TAG_RULES)
+    if len(rows) < 2:
+        return []
+    header = [h.strip().lower() for h in rows[0]]
+    rules = []
+    for row in rows[1:]:
+        rule = {}
+        for i, col in enumerate(header):
+            rule[col] = row[i].strip() if i < len(row) else ""
+        if rule.get("tag"):
+            rules.append(rule)
+    return rules
+
+
+def add_tag_rule(data: dict) -> dict:
+    """Add a new tag rule row to the Tag Rules sheet."""
+    row = [
+        data.get("tag", ""),
+        data.get("allowed_actions", ""),
+        data.get("description", ""),
+    ]
+    append_rows(TAB_TAG_RULES, [row])
+    return {"status": "added", "tag": data.get("tag", "")}
+
+
+# ---------------------------------------------------------------------------
+# Programmatic rules management
+# ---------------------------------------------------------------------------
+
+
+def add_programmatic_rule(data: dict) -> dict:
+    """Add a new programmatic rule to the Programmatic Rules sheet."""
+    # Auto-generate rule_id
+    existing = get_programmatic_rules()
+    next_id = len(existing) + 1
+    row = [
+        data.get("rule_id", f"rule-{next_id}"),
+        data.get("condition", ""),
+        data.get("action", ""),
+        data.get("description", ""),
+    ]
+    append_rows(TAB_RULES, [row])
+    return {"status": "added", "rule_id": row[0]}
+
+
+# ---------------------------------------------------------------------------
+# Triage log reading
+# ---------------------------------------------------------------------------
+
+
+def get_triage_log(limit: int = 20) -> list[dict]:
+    """Read recent triage log entries."""
+    rows = read_sheet(TAB_TRIAGE_LOG)
+    if len(rows) < 2:
+        return []
+    header = [h.strip().lower() for h in rows[0]]
+    entries = []
+    for row in rows[1:]:
+        entry = {}
+        for i, col in enumerate(header):
+            entry[col] = row[i].strip() if i < len(row) else ""
+        entries.append(entry)
+    # Return most recent entries
+    return entries[-limit:]
+
+
+# ---------------------------------------------------------------------------
 # Triage logging
 # ---------------------------------------------------------------------------
 
@@ -441,6 +592,36 @@ def main():
     p_match.add_argument("--from", dest="from_email", required=True)
     p_match.add_argument("--subject", default="")
 
+    # list-contacts
+    sub.add_parser("list-contacts", help="List all contacts")
+
+    # add-contact
+    p_add_contact = sub.add_parser("add-contact", help="Add a new contact")
+    p_add_contact.add_argument("json_data", help="JSON with contact fields")
+
+    # update-contact
+    p_update_contact = sub.add_parser("update-contact", help="Update a contact")
+    p_update_contact.add_argument("email", help="Email of contact to update")
+    p_update_contact.add_argument("json_data", help="JSON with fields to update")
+
+    # list-tag-rules
+    sub.add_parser("list-tag-rules", help="List all tag rules")
+
+    # add-tag-rule
+    p_add_tag = sub.add_parser("add-tag-rule", help="Add a tag rule")
+    p_add_tag.add_argument("json_data", help="JSON with tag rule fields")
+
+    # list-programmatic-rules (alias for get-rules)
+    sub.add_parser("list-programmatic-rules", help="List all programmatic rules")
+
+    # add-programmatic-rule
+    p_add_rule = sub.add_parser("add-programmatic-rule", help="Add a programmatic rule")
+    p_add_rule.add_argument("json_data", help="JSON with rule fields")
+
+    # get-triage-log
+    p_triage_log = sub.add_parser("get-triage-log", help="Get recent triage log")
+    p_triage_log.add_argument("--limit", type=int, default=20, help="Max entries")
+
     args = parser.parse_args()
 
     if not SPREADSHEET_ID:
@@ -479,6 +660,42 @@ def main():
             args.from_email, args.subject, rules
         )
         json.dump({"category": result}, sys.stdout)
+
+    elif args.command == "list-contacts":
+        contacts = list_contacts()
+        json.dump(contacts, sys.stdout)
+
+    elif args.command == "add-contact":
+        data = json.loads(args.json_data)
+        result = add_contact(data)
+        json.dump(result, sys.stdout)
+
+    elif args.command == "update-contact":
+        data = json.loads(args.json_data)
+        result = update_contact(args.email, data)
+        json.dump(result, sys.stdout)
+
+    elif args.command == "list-tag-rules":
+        rules = list_tag_rules_full()
+        json.dump(rules, sys.stdout)
+
+    elif args.command == "add-tag-rule":
+        data = json.loads(args.json_data)
+        result = add_tag_rule(data)
+        json.dump(result, sys.stdout)
+
+    elif args.command == "list-programmatic-rules":
+        rules = get_programmatic_rules()
+        json.dump(rules, sys.stdout)
+
+    elif args.command == "add-programmatic-rule":
+        data = json.loads(args.json_data)
+        result = add_programmatic_rule(data)
+        json.dump(result, sys.stdout)
+
+    elif args.command == "get-triage-log":
+        entries = get_triage_log(args.limit)
+        json.dump(entries, sys.stdout)
 
     else:
         parser.print_help()

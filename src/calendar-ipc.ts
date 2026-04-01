@@ -91,6 +91,8 @@ async function handleRequest(req: CalendarRequest): Promise<unknown> {
       if (args.location) cmdArgs.push('--location', String(args.location));
       if (args.start) cmdArgs.push('--start', String(args.start));
       if (args.end) cmdArgs.push('--end', String(args.end));
+      if (args.free === true) cmdArgs.push('--free');
+      if (args.free === false) cmdArgs.push('--busy');
       return runCalendarCmd(cmdArgs);
     }
 
@@ -105,6 +107,8 @@ async function handleRequest(req: CalendarRequest): Promise<unknown> {
       if (args.location) cmdArgs.push('--location', String(args.location));
       if (args.start) cmdArgs.push('--start', String(args.start));
       if (args.end) cmdArgs.push('--end', String(args.end));
+      if (args.free === true) cmdArgs.push('--free');
+      if (args.free === false) cmdArgs.push('--busy');
       return runCalendarCmd(cmdArgs);
     }
 
