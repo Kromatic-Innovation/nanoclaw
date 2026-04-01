@@ -279,19 +279,108 @@ def fetch_reminders() -> list[dict]:
     return items
 
 
+def fetch_triage_summary() -> list[dict]:
+    """Fetch today's already-triaged emails for the daily briefing synthesis.
+
+    Queries Gmail for items processed by the email-triage pipeline (labeled
+    with claw/* labels) in the last 24 hours. Returns WorkItems with triage
+    decisions attached so the synthesize stage can recap what happened.
+    """
+    if not os.path.exists(GMAIL_WRAPPER):
+        return []
+
+    # Fetch emails processed by email-triage since last briefing
+    query = (
+        "(label:claw-triaged OR label:claw-drafted OR label:claw-escalated OR label:claw-spam) "
+        "newer_than:1d"
+    )
+
+    raw = run_command([
+        "python3", GMAIL_WRAPPER,
+        "list",
+        "--query", query,
+        "--limit", "100",
+    ], timeout=30)
+    if not raw:
+        return []
+
+    try:
+        messages = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+
+    if not isinstance(messages, list):
+        return []
+
+    items = []
+    now = datetime.now(timezone.utc).isoformat()
+    for msg in messages:
+        msg_id = msg.get("id", "")
+        snippet = msg.get("snippet", "")
+        subject = msg.get("subject", snippet[:80])
+        sender = msg.get("from", "unknown")
+        date = msg.get("date", now)
+        labels = msg.get("labelIds", []) or msg.get("labels", [])
+
+        # Determine what triage action was taken based on labels
+        triage_action = "triaged"
+        if any("drafted" in str(l).lower() for l in labels):
+            triage_action = "drafted"
+        elif any("escalated" in str(l).lower() for l in labels):
+            triage_action = "escalated"
+        elif any("spam" in str(l).lower() for l in labels):
+            triage_action = "spam"
+
+        items.append({
+            "id": f"gmail-{msg_id}",
+            "source": "gmail",
+            "type": "email-summary",
+            "summary": f"[{triage_action}] From {sender}: {subject}",
+            "body": snippet,
+            "metadata": {
+                "messageId": msg_id,
+                "from": sender,
+                "subject": subject,
+                "triageAction": triage_action,
+            },
+            "timestamp": date,
+        })
+
+    return items
+
+
 def main():
+    triage_summary_mode = "--triage-summary" in sys.argv
+
     all_items: list[dict] = []
 
-    # Each source is independent — failures in one must not block others
-    for fetch_fn, name in [
-        (fetch_gmail, "gmail"),
-        (fetch_calendar, "calendar"),
-        (fetch_reminders, "reminders"),
-    ]:
+    if triage_summary_mode:
+        # Daily briefing mode: fetch what email-triage already processed
         try:
-            all_items.extend(fetch_fn())
+            all_items.extend(fetch_triage_summary())
         except Exception as e:
-            print(f"[fetch-daily-data] {name} failed: {e}", file=sys.stderr)
+            print(f"[fetch-daily-data] triage-summary failed: {e}", file=sys.stderr)
+
+        # Still include calendar and reminders for the daily briefing
+        for fetch_fn, name in [
+            (fetch_calendar, "calendar"),
+            (fetch_reminders, "reminders"),
+        ]:
+            try:
+                all_items.extend(fetch_fn())
+            except Exception as e:
+                print(f"[fetch-daily-data] {name} failed: {e}", file=sys.stderr)
+    else:
+        # Normal mode: fetch new unprocessed items
+        for fetch_fn, name in [
+            (fetch_gmail, "gmail"),
+            (fetch_calendar, "calendar"),
+            (fetch_reminders, "reminders"),
+        ]:
+            try:
+                all_items.extend(fetch_fn())
+            except Exception as e:
+                print(f"[fetch-daily-data] {name} failed: {e}", file=sys.stderr)
 
     json.dump(all_items, sys.stdout)
 

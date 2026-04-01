@@ -12,7 +12,10 @@ tickleStick:
     format: json
 
   pipelines:
-    daily-briefing:
+    # ── Email triage: continuous processing (every 5 min) ────────────────
+    # Processes new emails immediately: classify, reason, draft/reply-all,
+    # label, and send urgent Slack DMs. No synthesis — that's daily-briefing's job.
+    email-triage:
       stages:
         - name: gather
           type: script
@@ -23,16 +26,7 @@ tickleStick:
         - name: classify
           type: model
           provider: cheap
-          systemPrompt: |
-            You are pre-screening items for a daily briefing. Classify each as JSON:
-            {"classification": "needs-reasoning", "response": "one-line summary", "confidence": 0.5}
-
-            The ONLY exception: if the item is obvious spam (cold outreach, loan
-            offers, unsubscribe-only newsletters), classify as:
-            {"classification": "routine", "response": "spam: <reason>", "confidence": 0.95}
-
-            Everything else — even if it looks routine — MUST be "needs-reasoning"
-            so it reaches the full briefing model. Do not filter items here.
+          systemPrompt: "$file:config/prompts/email-triage-classify.md"
           confidenceThreshold: 1.0
           postHook:
             command: "python3"
@@ -42,63 +36,30 @@ tickleStick:
           type: model
           provider: expensive
           input: "classified:needs-reasoning,classified:urgent"
-          prompt: |
-            Per-email reasoning pass. Process each item individually.
-            {{items}}
-
-            ## Your role
-            You are Samuel Addy, a personal assistant. For each email:
-            - If contact has "draft" in allowed_actions → write a draft reply (use drafting_context for tone)
-            - If contact has "send" in allowed_actions → write the reply and mark for sending
-            - If "escalate" only (or unknown contact) → write a one-line recommendation for human
-            - Spam/mailing-list → mark as spam
-
-            ## Output format
-            For each item, output JSON:
-            {"id": "<item id>", "action": "draft|send|escalate|spam",
-             "summary": "one-line summary of what you did",
-             "draftText": "reply text if action=draft/send, null otherwise"}
-
-            Output as a JSON array.
+          prompt: "$file:config/prompts/email-triage-reason.md"
           postHook:
             command: "python3"
             args: ["scripts/apply-draft-labels.py"]
+
+        - name: post-deliver
+          type: callback
+
+    # ── Daily briefing: synthesis only (6 AM) ─────────────────────────────
+    # Summarizes what email-triage already processed. No classify/reason —
+    # that work is done continuously by the email-triage pipeline.
+    daily-briefing:
+      stages:
+        - name: gather
+          type: script
+          command: "python3"
+          args: ["scripts/fetch-daily-data.py", "--triage-summary"]
+          timeout: 30000
 
         - name: synthesize
           type: model
           provider: expensive
           input: "all"
-          prompt: |
-            Daily briefing synthesis. You have access to ALL items and prior stage results.
-            {{all_items}}
-
-            ## Your role
-            You are Samuel Addy, a personal assistant preparing a daily briefing.
-            The per-email reasoning stage already processed escalated items.
-            Your job is to synthesize everything into a concise, conversational briefing.
-
-            ## Output format — conversational, concise, no repetition
-
-            Start with a natural-language summary paragraph. Example tone:
-            "You have 4 routine emails I haven't touched, 3 from friends I drafted
-            a response to, and 2 urgent items: a Sentry regression and a note
-            from your wife."
-            Group by category. Name urgent/important items specifically. Be brief.
-
-            Then:
-            **BIG ROCK:** One sentence — the single most important thing today.
-
-            Then, if there are items needing attention:
-            **Needs your attention:**
-            - One line per item with a recommended action. Only items that need
-              a human decision — not routine stuff.
-
-            If drafts were created in the reasoning stage, add:
-            **Drafts created:**
-            - One line per draft (who, subject, what was written)
-
-            Do NOT include any JSON, label actions, or pipeline internals.
-            This is a clean briefing message for the user.
+          prompt: "$file:config/prompts/daily-briefing-synthesize.md"
 
         - name: post-deliver
           type: callback
@@ -116,204 +77,37 @@ tickleStick:
           command: "python3"
           args: ["scripts/repo-maintenance-gather.py", "--tier", "auto", "--preflight-done"]
           timeout: 300000             # 5 minutes for 27 repos
-          # Frequency: daily repos (configured in config/private.yaml) get full scan every run.
-          # Weekly repos get full scan on Thursdays, urgent-only (dependabot + Sentry) other days.
-          # Fixes for weekly repos land Thursday→Friday (low traffic).
 
         - name: classify
           type: model
           provider: cheap
-          systemPrompt: |
-            You are triaging repository maintenance items. Each item includes:
-            - A `[type: ...]` line with a pre-classification
-            - A `[labels: ...]` line with GitHub labels (if any)
-            - A summary and optional body
-
-            For each item, respond with JSON:
-            {"classification": "routine"|"urgent"|"needs-reasoning", "response": "one-line action summary", "confidence": 0.0-1.0}
-
-            LABEL OVERRIDES (check labels FIRST, these take priority):
-            - status:approved → routine (human already approved; ready for execution)
-            - status:planned → routine (plan already exists; ready for execution)
-            - status:staged → routine (already deployed to staging; just tracking)
-            - status:in-progress → routine (work already underway)
-            - status:blocked → routine (known blocker, just tracking)
-
-            MOSCOW PRIORITY (from labels, influences urgency):
-            - moscow:must → treat as urgent if not already approved/planned
-            - moscow:should → default priority, no override
-            - moscow:could → lower priority, routine unless type says otherwise
-            - moscow:wont → routine (not doing this cycle, just tracking)
-
-            OWNER COMMENT OVERRIDE:
-            If the body mentions "hasOwnerComment: true" or you see a recent comment
-            from @TriKro, classify as needs-reasoning — the owner may have answered
-            planning questions and the plan should be revisited.
-
-            Classification rules (when no label/owner override applies):
-            - routine: dependabot-safe items (auto-fixable patches), informational CI status
-            - urgent: dependabot-urgent (CVE >= 7.0), production Sentry regressions, CI failures > 2 days
-            - needs-reasoning: dependabot-unsafe (needs plan), untriaged items, cross-repo impact
+          systemPrompt: "$file:config/prompts/repo-triage-classify.md"
           confidenceThreshold: 0.8
 
         - name: triage
           type: model
           provider: expensive
-          prompt: |
-            Triage-only pass. Classify items into work queues. Do NOT execute any fixes.
-            {{items}}
-
-            For each item, output a structured lane assignment:
-            - Which repo it belongs to
-            - Whether it needs a plan (untriaged, no existing plan) or is ready for execution (status:approved or auto-fixable)
-            - Cross-repo dependencies (references to issues in other repos)
-
-            Output as JSON summary for the orchestrator.
+          prompt: "$file:config/prompts/repo-triage-triage.md"
 
         - name: escalate
           type: callback
 
     repo-maintenance-plan:
-      # No script stage — items come from triage output, orchestrated by task-scheduler.ts.
-      # Box-claude explores the codebase and writes implementation plans.
       stages:
         - name: plan
           type: model
           provider: expensive
-          prompt: |
-            You are exploring a codebase to write implementation plans for maintenance items.
-            Read /workspace/nanoclaw-context/prompt.txt for your full assignment.
-
-            IMPORTANT — Label rules for planning:
-            - For draft-with-owner-input items: promote status:draft → status:planned ONLY.
-              Do NOT add status:approved. The plan needs human review before approval.
-            - For other items: do NOT change status labels. Planning writes plans, not approvals.
-            - Never add status:approved — only humans can approve plans.
-            {{items}}
+          prompt: "$file:config/prompts/repo-plan.md"
 
         - name: escalate
           type: callback
 
     repo-maintenance-execute:
-      # No script stage — items come from triage output (status:approved or auto-fixable).
-      # Box-claude implements fixes using /occam for the delivery pipeline.
       stages:
         - name: execute
           type: model
           provider: expensive
-          prompt: |
-            You are the repo maintenance agent running inside box-claude. Execute fixes for these items:
-            {{items}}
-
-            ## Startup — Read Task Context
-            Check if /workspace/nanoclaw-context/task.json exists. If it does:
-            - Read it for your assignment, repo scope, and any prior context
-            - If `priorContext` is present, a previous session started this work.
-              Resume from the last checkpoint — do NOT restart from scratch.
-              Check the current state (branches, PRs, CI) before taking action.
-
-            ## Label Taxonomy
-            - type:bug, type:dependency, type:feature — what kind of work
-            - status:draft → status:planned → status:approved → status:in-progress → status:staged
-            - status:blocked — item has a known blocker (dependency, missing info, etc.)
-            - moscow:must/should/could/wont — priority (see below)
-
-            ## MoSCoW Prioritization (see docs/moscow-prioritization.md)
-            Process items in MoSCoW order: must → should → could. Skip moscow:wont.
-            - moscow:must — system is broken/blocked without this. Fix immediately.
-            - moscow:should — delivers ROI, workaround exists. Fix this cycle.
-            - moscow:could — nice to have. Fix only after must/should are done.
-            - moscow:wont — not doing this cycle. Skip (do not attempt fix).
-            Within same MoSCoW bucket, sequence by: dependency-ordered → risk-weighted → single-repo first.
-
-            ## Label Hygiene
-            Labels MUST reflect actual state. After processing each item:
-            - Fixed and merged to develop: remove status:in-progress, add status:staged
-            - Fixed and promoted to staging: keep status:staged
-            - Blocked on another repo/dependency: remove status:in-progress/approved, add status:blocked
-            - Skipped (can't fix, unclear requirements): revert to status:planned if was in-progress
-            - Items with type:needs-label-check: verify the actual state on GitHub (check
-              if related PRs were merged, if the issue was fixed) and correct the label
-            - Items with type:draft-with-owner-input: after writing a plan, promote
-              status:draft → status:planned (owner answered questions, plan is ready for approval)
-
-            ## Step 0: Skip items with open PRs
-            Before processing each item, check its metadata.openPRs array. If it is
-            non-empty, a PR already exists for this issue — skip the item entirely.
-            Record it in completion.json with action "skipped" and detail
-            "open PR already exists: #<number>". Do NOT create another PR.
-
-            ## Step 1: Dedup — Read Before Writing
-            Each item's body field includes the existing GitHub issue body and recent comments.
-            Before creating any issue or adding any comment:
-            - Read the existing issue body. If it already has an "## Implementation Plan", do NOT add another.
-            - Read recent comments. If the information you'd add is already there, skip it.
-            - Check if `.codex/plans/issue-<N>.md` exists — read the plan for implementation guidance.
-
-            ## Step 2: Auto-fix decision
-            Decide whether to attempt a fix. Check `status:approved` FIRST — approved items
-            have been reviewed by a human and should be attempted regardless of type.
-
-            AUTO-FIX (proceed immediately):
-            - status:approved items — human already approved, attempt regardless of type
-            - dependabot-safe: auto-merge the PR
-            - dependabot-urgent or dependabot-unsafe with patch/minor semver: attempt fix
-            - sentry-regression: always auto-fix (regressions have well-defined expected behavior)
-            - ci-failure where failureType is "test": auto-fix (test failures have unambiguous expected state)
-
-            WAIT FOR HUMAN (label stays status:planned):
-            - dependabot with major version bump (unless status:approved)
-            - ci-failure where failureType is "build" (could be infra or collateral)
-            - stale PRs for non-dependabot work (unclear why stale)
-            - type:feature items that are NOT status:approved
-            - any item where requirements are ambiguous
-
-            If you start working on a feature and realize the requirements are unclear or
-            you cannot complete it, stop and add a comment to the issue explaining what
-            needs clarification. Set the label back to status:planned.
-
-            ## Step 3: Attempt fix — Use /occam
-            For each item that qualifies for auto-fix:
-            1. Add label status:in-progress to the issue
-            2. Use /occam to orchestrate the full delivery pipeline:
-               - /occam handles: branch creation, implementation, testing, PR, CI wait,
-                 merge to develop, staging promotion, staging verification
-               - Pass the issue URL and your implementation approach to /occam
-            3. Do NOT manually run CI/merge/staging steps — /occam owns the delivery pipeline
-            4. If /occam reports success and staging is green: add label status:staged
-            5. If /occam reports failure or you get stuck: keep status:in-progress,
-               include the error in your completion report
-
-            ## Step 4: Stale PR handling
-            For stale dependabot PRs (major upgrades):
-            - Create an issue with a migration/upgrade plan
-            - Post a comment on the PR linking to the issue
-            For stale non-dependabot PRs:
-            - Post a reminder comment asking for status update
-
-            ## Completion — Write Status File (MANDATORY)
-            You MUST write /workspace/nanoclaw-context/completion.json before exiting,
-            even if every item was skipped. Exiting without this file causes a crash
-            in the orchestrator. Write it as the LAST thing you do.
-            ```json
-            {
-              "status": "completed | partial | failed",
-              "summary": "What was accomplished",
-              "completedSteps": ["list", "of", "completed", "steps"],
-              "remainingSteps": ["list", "of", "remaining", "steps"],
-              "artifacts": {
-                "prs": [{"url": "...", "state": "merged|open", "repo": "..."}],
-                "issuesCreated": [{"url": "...", "repo": "..."}],
-                "stagingGreen": true
-              },
-              "itemResults": [
-                {"id": "item-id", "action": "fixed|skipped|failed", "detail": "..."}
-              ]
-            }
-            ```
-            Use status "completed" if all items were processed (including all-skipped).
-            Use status "partial" if you ran out of context or time.
-            Use status "failed" if a critical error prevented work.
+          prompt: "$file:config/prompts/repo-execute.md"
 
         - name: escalate
           type: callback
@@ -329,22 +123,14 @@ tickleStick:
         - name: classify
           type: model
           provider: cheap
-          systemPrompt: |
-            Classify this retrospective item as JSON:
-            {"classification": "routine"|"urgent"|"needs-reasoning", "response": "...", "confidence": 0.0-1.0}
-            - routine: factual data point, include as-is
-            - needs-reasoning: concerning trend or pattern worth analyzing
+          systemPrompt: "$file:config/prompts/weekly-retro-classify.md"
           confidenceThreshold: 0.7
 
         - name: synthesize
           type: model
           provider: expensive
           input: "all"
-          prompt: |
-            Weekly retrospective. Data:
-            {{all_items}}
-            Part 1 — Facts on the ground: costs, errors, key decisions.
-            Part 2 — Retro kickoff: what went well (+), what didn't (-), what to change (delta).
+          prompt: "$file:config/prompts/weekly-retro-synthesize.md"
 
         - name: escalate
           type: callback

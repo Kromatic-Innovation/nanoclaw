@@ -22,6 +22,7 @@ groups/global/*
 *.keys.json
 .env
 config/private.yaml
+config/prompts/
 
 # Temp files
 .tmp-*

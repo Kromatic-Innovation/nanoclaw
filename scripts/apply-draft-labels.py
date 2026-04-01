@@ -52,24 +52,40 @@ def apply_label(message_id: str, label: str) -> bool:
         return False
 
 
-def create_draft(to: str, subject: str, body: str) -> bool:
-    """Create a Gmail draft via the action guard."""
+def create_draft(to: str, subject: str, body: str, reply_type: str = "new", message_id: str = "") -> bool:
+    """Create a Gmail draft via the action guard.
+
+    If reply_type is "reply-all" and message_id is provided, uses draft-reply-all
+    to reply to the existing thread. Otherwise creates a new draft.
+    """
     script = EMAIL_ACTION_GUARD if os.path.exists(EMAIL_ACTION_GUARD) else GMAIL_WRAPPER
     try:
-        subprocess.run(
-            [
-                "python3", script, "draft-new",
-                "--to", to,
-                "--subject", subject,
-                "--body", body,
-            ],
-            timeout=30,
-            capture_output=True,
-            text=True,
-        )
+        if reply_type == "reply-all" and message_id:
+            subprocess.run(
+                [
+                    "python3", script, "draft-reply-all",
+                    "--id", message_id,
+                    "--body", body,
+                ],
+                timeout=30,
+                capture_output=True,
+                text=True,
+            )
+        else:
+            subprocess.run(
+                [
+                    "python3", script, "draft-new",
+                    "--to", to,
+                    "--subject", subject,
+                    "--body", body,
+                ],
+                timeout=30,
+                capture_output=True,
+                text=True,
+            )
         return True
     except Exception as e:
-        log(f"Failed to create draft for {to}: {e}")
+        log(f"Failed to create draft for {to or message_id}: {e}")
         return False
 
 
@@ -111,7 +127,7 @@ def main() -> None:
         if not message_id:
             continue
 
-        if action in ("draft", "send"):
+        if action in ("draft", "send", "urgent"):
             # Apply claw/drafted label
             if apply_label(message_id, "claw/drafted"):
                 labels_applied += 1
@@ -120,8 +136,10 @@ def main() -> None:
             draft_text = item.get("draftText")
             to = item.get("to", "")
             subject = item.get("subject", "")
-            if draft_text and to:
-                if create_draft(to, subject, draft_text):
+            reply_type = item.get("replyType", "new")
+            orig_message_id = item.get("messageId", "") or message_id
+            if draft_text and (to or (reply_type == "reply-all" and orig_message_id)):
+                if create_draft(to, subject, draft_text, reply_type, orig_message_id):
                     drafts_created += 1
 
         elif action == "escalate":

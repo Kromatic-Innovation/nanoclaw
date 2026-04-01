@@ -1328,13 +1328,16 @@ async function runTask(
   if (task.prompt.startsWith('pipeline:')) {
     const pipelinePrompt = task.prompt.slice('pipeline:'.length).trim();
 
-    // Acknowledge pipeline start
+    // Acknowledge pipeline start (suppress for email-triage — runs every 5 min)
     const pipelineLabel = pipelinePrompt.split(' ')[0];
-    const startMsg =
-      pipelineLabel === 'daily-briefing'
-        ? "I'm putting together your daily briefing now…"
-        : `Starting pipeline: *${pipelineLabel}* …`;
-    await deps.sendMessage(task.chat_jid, startMsg).catch(() => {});
+    const isEmailTriage = pipelineLabel === 'email-triage';
+    if (!isEmailTriage) {
+      const startMsg =
+        pipelineLabel === 'daily-briefing'
+          ? "I'm putting together your daily briefing now…"
+          : `Starting pipeline: *${pipelineLabel}* …`;
+      await deps.sendMessage(task.chat_jid, startMsg).catch(() => {});
+    }
 
     // Repo maintenance uses the phased orchestrator
     if (
@@ -1355,18 +1358,46 @@ async function runTask(
       error = `Pipeline not found: ${pipelinePrompt}`;
       logger.error({ taskId: task.id, pipelineName: pipelinePrompt }, error);
     } else {
-      // Other pipelines (daily-briefing, weekly-retro) use standard flow
+      // Other pipelines (email-triage, daily-briefing, weekly-retro) use standard flow
       try {
         const isDailyBriefing = pipelinePrompt === 'daily-briefing';
 
         // Build stage callbacks based on pipeline type
         const stageCallbacks: Record<string, StageCallback> = {};
 
-        if (isDailyBriefing) {
-          // Daily briefing: direct API calls for reasoning and synthesis
+        if (isEmailTriage) {
+          // Email triage: continuous processing, no synthesis
+          // Capture reason output in closure so post-deliver can access it
+          let reasonOutput = '';
           stageCallbacks['reason'] = async (items, prompt) => {
-            return processTier2Direct(items, prompt);
+            reasonOutput = await processTier2Direct(items, prompt);
+            return reasonOutput;
           };
+          // Post-deliver: apply triaged labels + send Slack DMs for urgent items
+          stageCallbacks['post-deliver'] = async (items) => {
+            try {
+              await applyTriagedLabels(items);
+            } catch (labelErr) {
+              logger.warn(
+                { err: labelErr },
+                'Failed to apply post-delivery triaged labels (email-triage)',
+              );
+            }
+            // Send Slack DMs for urgent items from the reason stage output
+            if (reasonOutput) {
+              try {
+                await sendUrgentSlackAlerts(reasonOutput, deps, task.chat_jid);
+              } catch (alertErr) {
+                logger.warn(
+                  { err: alertErr },
+                  'Failed to send urgent Slack alerts',
+                );
+              }
+            }
+            return '';
+          };
+        } else if (isDailyBriefing) {
+          // Daily briefing: synthesis only (reasoning done by email-triage)
           stageCallbacks['synthesize'] = async (items, prompt) => {
             return processTier2Direct(items, prompt);
           };
@@ -1404,7 +1435,18 @@ async function runTask(
           stageCallbacks,
         );
 
-        if (isDailyBriefing) {
+        if (isEmailTriage) {
+          // Email triage: silent unless urgent alerts were sent (handled in post-deliver)
+          result =
+            pipelineResult.totalItems === 0
+              ? null // No new emails — completely silent
+              : `Processed ${pipelineResult.totalItems} emails`;
+          // Don't send any message — urgent alerts already sent in post-deliver
+          logger.info(
+            { totalItems: pipelineResult.totalItems },
+            'Email triage pipeline completed',
+          );
+        } else if (isDailyBriefing) {
           // The briefing is the clean output of the "synthesize" stage
           const synthesizeStage = pipelineResult.stageResults.find(
             (s) => s.name === 'synthesize',
@@ -1843,6 +1885,46 @@ async function applyEmailTriageLabels(pipelineResult: string): Promise<void> {
 }
 
 /**
+ * Parse the Tier 2 reason output for urgent items and send Slack DM alerts.
+ * Called from the email-triage post-deliver callback.
+ */
+async function sendUrgentSlackAlerts(
+  reasonOutput: string,
+  deps: SchedulerDependencies,
+  chatJid: string,
+): Promise<void> {
+  let results: { action?: string; summary?: string }[];
+  try {
+    results = JSON.parse(reasonOutput);
+  } catch {
+    // Try to extract JSON array from text
+    const match = reasonOutput.match(/\[[\s\S]*\]/);
+    if (!match) return;
+    try {
+      results = JSON.parse(match[0]);
+    } catch {
+      return;
+    }
+  }
+
+  if (!Array.isArray(results)) return;
+
+  const urgentItems = results.filter((r) => r.action === 'urgent');
+  for (const item of urgentItems) {
+    const alert = `\u26a0\ufe0f ${item.summary || 'Urgent email needs your attention'}`;
+    try {
+      await deps.sendMessage(chatJid, alert);
+      logger.info({ summary: item.summary }, 'Sent urgent Slack alert');
+    } catch (err) {
+      logger.warn(
+        { err, summary: item.summary },
+        'Failed to send urgent Slack alert',
+      );
+    }
+  }
+}
+
+/**
  * Apply claw/triaged labels to all gmail items after successful briefing delivery.
  * This is called from the "post-deliver" callback stage.
  */
@@ -1960,6 +2042,95 @@ function syncDailyBriefing(): void {
     { taskId, cron: cronExpr, nextRun },
     'Created daily briefing task',
   );
+}
+
+/**
+ * Sync the email triage task from config/private.yaml.
+ *
+ * Reads emailTriage.enabled and emailTriage.cron, then creates or
+ * updates a cron task for the email-triage pipeline.
+ */
+function syncEmailTriage(): void {
+  const configPath = path.join(process.cwd(), 'config', 'private.yaml');
+  if (!fs.existsSync(configPath)) return;
+
+  let config: {
+    emailTriage?: {
+      enabled?: boolean;
+      cron?: string;
+    };
+  };
+  try {
+    config = parseYaml(fs.readFileSync(configPath, 'utf-8'));
+  } catch (err) {
+    logger.warn(
+      { err },
+      'Failed to parse config/private.yaml for email triage sync',
+    );
+    return;
+  }
+
+  const triageConfig = config?.emailTriage;
+  if (!triageConfig?.enabled) {
+    logger.debug('Email triage not enabled in config, skipping sync');
+    return;
+  }
+
+  const groups = getAllRegisteredGroups();
+  let mainJid: string | null = null;
+  let mainFolder: string | null = null;
+  for (const [jid, group] of Object.entries(groups)) {
+    if (group.isMain) {
+      mainJid = jid;
+      mainFolder = group.folder;
+      break;
+    }
+  }
+  if (!mainJid || !mainFolder) {
+    logger.warn('No main group registered yet, deferring email triage sync');
+    return;
+  }
+
+  const taskId = 'email-triage';
+  const cronExpr = triageConfig.cron || '*/5 * * * *';
+  const prompt = 'pipeline:email-triage';
+
+  const existingTasks = getAllTasks();
+  const existing = existingTasks.find((t) => t.id === taskId);
+
+  if (existing) {
+    if (existing.schedule_value !== cronExpr) {
+      const interval = CronExpressionParser.parse(cronExpr, { tz: TIMEZONE });
+      const nextRun = interval.next().toISOString();
+      updateTask(taskId, { schedule_value: cronExpr, next_run: nextRun });
+      logger.info(
+        { taskId, cron: cronExpr, nextRun },
+        'Updated email triage schedule',
+      );
+    }
+    if (existing.status !== 'active') {
+      updateTask(taskId, { status: 'active' });
+    }
+    return;
+  }
+
+  const interval = CronExpressionParser.parse(cronExpr, { tz: TIMEZONE });
+  const nextRun = interval.next().toISOString();
+
+  createTask({
+    id: taskId,
+    group_folder: mainFolder,
+    chat_jid: mainJid,
+    prompt,
+    schedule_type: 'cron',
+    schedule_value: cronExpr,
+    context_mode: 'isolated',
+    next_run: nextRun,
+    status: 'active',
+    created_at: new Date().toISOString(),
+  });
+
+  logger.info({ taskId, cron: cronExpr, nextRun }, 'Created email triage task');
 }
 
 function syncWeeklyRetro(): void {
@@ -2097,6 +2268,12 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
     syncScheduledRepoMaintenance();
   } catch (err) {
     logger.error({ err }, 'Failed to sync scheduled repo maintenance tasks');
+  }
+
+  try {
+    syncEmailTriage();
+  } catch (err) {
+    logger.error({ err }, 'Failed to sync email triage task');
   }
 
   try {
