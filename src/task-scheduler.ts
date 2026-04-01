@@ -2495,6 +2495,32 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
   loop();
 }
 
+/**
+ * Re-sync all config-driven scheduled tasks. Called by reload_config IPC
+ * to pick up changes to tickle-stick.yaml / private.yaml without a full restart.
+ */
+export function reloadConfig(): void {
+  logger.info('Reloading configuration — re-syncing all scheduled tasks');
+
+  const syncFns: Array<[string, () => void]> = [
+    ['scheduled repo maintenance', syncScheduledRepoMaintenance],
+    ['email triage', syncEmailTriage],
+    ['daily briefing', syncDailyBriefing],
+    ['weekly retro', syncWeeklyRetro],
+    ['calendar management', syncCalendarManagement],
+  ];
+
+  for (const [name, fn] of syncFns) {
+    try {
+      fn();
+    } catch (err) {
+      logger.error({ err }, `Failed to re-sync ${name} during config reload`);
+    }
+  }
+
+  logger.info('Configuration reload complete');
+}
+
 /** @internal - for tests only. */
 export function _resetSchedulerLoopForTests(): void {
   schedulerRunning = false;

@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { CronExpressionParser } from 'cron-parser';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
@@ -64,6 +65,8 @@ export interface IpcDeps {
     registeredJids: Set<string>,
   ) => void;
   onTasksChanged: () => void;
+  reloadConfig: () => void;
+  restartService: (reason: string) => void;
 }
 
 let ipcWatcherRunning = false;
@@ -251,6 +254,56 @@ export function startIpcWatcher(deps: IpcDeps): void {
         processMemoryIpc(path.join(ipcBaseDir, sourceGroup));
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error processing memory IPC');
+      }
+
+      // Process system commands (reload_config, restart_service) — main group only
+      try {
+        const systemDir = path.join(ipcBaseDir, sourceGroup, 'system');
+        if (isMain && fs.existsSync(systemDir)) {
+          const systemFiles = fs
+            .readdirSync(systemDir)
+            .filter((f) => f.endsWith('.json'));
+          for (const file of systemFiles) {
+            const filePath = path.join(systemDir, file);
+            try {
+              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              fs.unlinkSync(filePath);
+              if (data.type === 'reload_config') {
+                logger.info({ sourceGroup }, 'Config reload requested via IPC');
+                deps.reloadConfig();
+              } else if (data.type === 'restart_service') {
+                logger.info(
+                  { sourceGroup, reason: data.reason },
+                  'Service restart requested via IPC',
+                );
+                deps.restartService(data.reason || 'Requested by agent');
+              } else if (data.type === 'create_routine') {
+                logger.info(
+                  { sourceGroup, pipeline: data.pipelineName },
+                  'Create routine requested via IPC',
+                );
+                handleCreateRoutine(data, deps);
+              } else {
+                logger.warn({ type: data.type }, 'Unknown system IPC command');
+              }
+            } catch (err) {
+              logger.error(
+                { file, sourceGroup, err },
+                'Error processing system IPC command',
+              );
+              try {
+                fs.unlinkSync(filePath);
+              } catch {
+                /* ignore */
+              }
+            }
+          }
+        }
+      } catch (err) {
+        logger.error(
+          { err, sourceGroup },
+          'Error reading system IPC directory',
+        );
       }
 
       // Process status updates from container (tool call notifications)
@@ -600,5 +653,127 @@ export async function processTaskIpc(
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');
+  }
+}
+
+/**
+ * Handle create_routine IPC command: write pipeline definition and prompts,
+ * then reload configuration.
+ */
+function handleCreateRoutine(
+  data: {
+    pipelineName: string;
+    stagesYaml: string;
+    prompts: Record<string, string>;
+    schedule: { enabled: boolean; cron: string; config_key: string } | null;
+  },
+  deps: IpcDeps,
+): void {
+  const { pipelineName, stagesYaml, prompts, schedule } = data;
+
+  if (!pipelineName || !stagesYaml) {
+    logger.warn('create_routine: missing pipelineName or stagesYaml');
+    return;
+  }
+
+  // Validate pipeline name (kebab-case, no path traversal)
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(pipelineName)) {
+    logger.warn(
+      { pipelineName },
+      'create_routine: invalid pipeline name (must be kebab-case)',
+    );
+    return;
+  }
+
+  try {
+    // 1. Write prompt files to config/prompts/
+    const promptsDir = path.join(process.cwd(), 'config', 'prompts');
+    fs.mkdirSync(promptsDir, { recursive: true });
+
+    for (const [filename, content] of Object.entries(prompts)) {
+      // Security: prevent path traversal in filenames
+      const safeName = path.basename(filename);
+      if (safeName !== filename || filename.includes('..')) {
+        logger.warn(
+          { filename },
+          'create_routine: skipping unsafe prompt filename',
+        );
+        continue;
+      }
+      const promptPath = path.join(promptsDir, safeName);
+      fs.writeFileSync(promptPath, content);
+      logger.info({ file: safeName }, 'Wrote prompt file');
+    }
+
+    // 2. Parse the stages YAML and append pipeline to tickle-stick.yaml
+    const tickleStickPath = path.join(process.cwd(), 'tickle-stick.yaml');
+    if (!fs.existsSync(tickleStickPath)) {
+      logger.error('create_routine: tickle-stick.yaml not found');
+      return;
+    }
+
+    const yamlContent = fs.readFileSync(tickleStickPath, 'utf-8');
+
+    // Parse the stages YAML to validate it
+    let stages: unknown;
+    try {
+      stages = parseYaml(stagesYaml);
+    } catch (err) {
+      logger.error({ err }, 'create_routine: invalid stages YAML');
+      return;
+    }
+
+    // Parse the full config, add the new pipeline, rewrite
+    const config = parseYaml(yamlContent) as {
+      tickleStick: { pipelines: Record<string, unknown> };
+      [key: string]: unknown;
+    };
+
+    if (config.tickleStick?.pipelines?.[pipelineName]) {
+      logger.warn(
+        { pipelineName },
+        'create_routine: pipeline already exists, overwriting',
+      );
+    }
+
+    config.tickleStick.pipelines[pipelineName] = { stages };
+
+    // Write back with comment preservation (stringify + prepend comment)
+    const newYaml = stringifyYaml(config, {
+      lineWidth: 0, // Don't wrap lines
+    });
+    fs.writeFileSync(tickleStickPath, newYaml);
+    logger.info({ pipelineName }, 'Pipeline added to tickle-stick.yaml');
+
+    // 3. Optionally add schedule to config/private.yaml
+    if (schedule) {
+      const privatePath = path.join(process.cwd(), 'config', 'private.yaml');
+      if (fs.existsSync(privatePath)) {
+        const privateContent = fs.readFileSync(privatePath, 'utf-8');
+        const privateConfig = parseYaml(privateContent) as Record<
+          string,
+          unknown
+        >;
+
+        privateConfig[schedule.config_key] = {
+          enabled: schedule.enabled,
+          cron: schedule.cron,
+        };
+
+        const newPrivateYaml = stringifyYaml(privateConfig, {
+          lineWidth: 0,
+        });
+        fs.writeFileSync(privatePath, newPrivateYaml);
+        logger.info(
+          { key: schedule.config_key, cron: schedule.cron },
+          'Schedule added to config/private.yaml',
+        );
+      }
+    }
+
+    // 4. Reload config to pick up the new pipeline
+    deps.reloadConfig();
+  } catch (err) {
+    logger.error({ err, pipelineName }, 'Failed to create routine');
   }
 }

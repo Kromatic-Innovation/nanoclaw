@@ -13,6 +13,7 @@ import { logger } from './logger.js';
 
 const SCRIPTS_DIR = path.join(process.cwd(), 'scripts');
 const SHEETS_SCRIPT = path.join(SCRIPTS_DIR, 'sheets_contact_db.py');
+const SHEETS_WRAPPER = path.join(SCRIPTS_DIR, 'google_sheets_wrapper.py');
 
 interface SheetsRequest {
   id: string;
@@ -34,6 +35,40 @@ function runSheetsCmd(cmdArgs: string[]): Promise<unknown> {
         if (error) {
           reject(
             new Error(`sheets_contact_db error: ${stderr || error.message}`),
+          );
+          return;
+        }
+        const trimmed = stdout.trim();
+        if (!trimmed) {
+          resolve(null);
+          return;
+        }
+        try {
+          resolve(JSON.parse(trimmed));
+        } catch {
+          resolve(trimmed);
+        }
+      },
+    );
+  });
+}
+
+function runSheetsWrapper(cmdArgs: string[]): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'python3',
+      [SHEETS_WRAPPER, ...cmdArgs],
+      {
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: 30000,
+        env: process.env,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(
+            new Error(
+              `google_sheets_wrapper error: ${stderr || error.message}`,
+            ),
           );
           return;
         }
@@ -129,6 +164,84 @@ async function handleRequest(req: SheetsRequest): Promise<unknown> {
       const cmdArgs = ['get-triage-log'];
       if (args.limit) cmdArgs.push('--limit', String(args.limit));
       return runSheetsCmd(cmdArgs);
+    }
+
+    // --- General-purpose spreadsheet operations ---
+
+    case 'create_spreadsheet': {
+      if (!args.title) throw new Error('title is required');
+      const cmdArgs = ['create', '--title', String(args.title)];
+      if (args.sheets) cmdArgs.push('--sheets', String(args.sheets));
+      return runSheetsWrapper(cmdArgs);
+    }
+
+    case 'read_range': {
+      if (!args.spreadsheet_id) throw new Error('spreadsheet_id is required');
+      if (!args.range) throw new Error('range is required');
+      return runSheetsWrapper([
+        'read',
+        '--spreadsheet-id',
+        String(args.spreadsheet_id),
+        '--range',
+        String(args.range),
+      ]);
+    }
+
+    case 'write_range': {
+      if (!args.spreadsheet_id) throw new Error('spreadsheet_id is required');
+      if (!args.range) throw new Error('range is required');
+      if (!args.data) throw new Error('data is required');
+      const cmdArgs = [
+        'write',
+        '--spreadsheet-id',
+        String(args.spreadsheet_id),
+        '--range',
+        String(args.range),
+        '--data',
+        typeof args.data === 'string' ? args.data : JSON.stringify(args.data),
+      ];
+      if (args.input_option)
+        cmdArgs.push('--input-option', String(args.input_option));
+      return runSheetsWrapper(cmdArgs);
+    }
+
+    case 'append_rows': {
+      if (!args.spreadsheet_id) throw new Error('spreadsheet_id is required');
+      if (!args.sheet) throw new Error('sheet is required');
+      if (!args.data) throw new Error('data is required');
+      const cmdArgs = [
+        'append',
+        '--spreadsheet-id',
+        String(args.spreadsheet_id),
+        '--sheet',
+        String(args.sheet),
+        '--data',
+        typeof args.data === 'string' ? args.data : JSON.stringify(args.data),
+      ];
+      if (args.input_option)
+        cmdArgs.push('--input-option', String(args.input_option));
+      return runSheetsWrapper(cmdArgs);
+    }
+
+    case 'list_sheets': {
+      if (!args.spreadsheet_id) throw new Error('spreadsheet_id is required');
+      return runSheetsWrapper([
+        'list-sheets',
+        '--spreadsheet-id',
+        String(args.spreadsheet_id),
+      ]);
+    }
+
+    case 'add_sheet': {
+      if (!args.spreadsheet_id) throw new Error('spreadsheet_id is required');
+      if (!args.title) throw new Error('title is required');
+      return runSheetsWrapper([
+        'add-sheet',
+        '--spreadsheet-id',
+        String(args.spreadsheet_id),
+        '--title',
+        String(args.title),
+      ]);
     }
 
     default:

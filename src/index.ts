@@ -57,7 +57,11 @@ import {
   loadSenderAllowlist,
   shouldDropMessage,
 } from './sender-allowlist.js';
-import { startSchedulerLoop, triggerPipelineNow } from './task-scheduler.js';
+import {
+  startSchedulerLoop,
+  triggerPipelineNow,
+  reloadConfig,
+} from './task-scheduler.js';
 import {
   getBudgetStatus,
   getPipelineMetrics,
@@ -816,6 +820,17 @@ async function main(): Promise<void> {
       for (const group of Object.values(registeredGroups)) {
         writeTasksSnapshot(group.folder, group.isMain === true, taskRows);
       }
+    },
+    reloadConfig: () => {
+      reloadConfig();
+    },
+    restartService: (reason: string) => {
+      logger.info({ reason }, 'Restarting service via IPC request');
+      // Give a brief delay for the IPC response to be written back,
+      // then exit. The OS service manager (launchd/systemd) will restart us.
+      setTimeout(() => {
+        process.exit(0);
+      }, 1000);
     },
   });
   queue.setProcessMessagesFn(processGroupMessages);

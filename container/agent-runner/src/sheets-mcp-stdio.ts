@@ -203,5 +203,89 @@ server.tool(
   async (args) => textResult(await ipcRequest('get_triage_log', args)),
 );
 
+// --- General-purpose spreadsheet operations ---
+
+server.tool(
+  'create_spreadsheet',
+  'Create a new Google Spreadsheet. Returns the spreadsheet ID and URL.',
+  {
+    title: z.string().describe('Title for the new spreadsheet'),
+    sheets: z
+      .string()
+      .optional()
+      .describe('Comma-separated tab names to create (default: "Sheet1")'),
+  },
+  async (args) => textResult(await ipcRequest('create_spreadsheet', args)),
+);
+
+server.tool(
+  'read_range',
+  'Read a range of cells from a Google Spreadsheet. Returns the values as a 2D array.',
+  {
+    spreadsheet_id: z.string().describe('The spreadsheet ID'),
+    range: z
+      .string()
+      .describe('A1 notation range (e.g. "Sheet1!A1:C10", "Sheet1!A:A")'),
+  },
+  async (args) => textResult(await ipcRequest('read_range', args)),
+);
+
+server.tool(
+  'write_range',
+  'Write data to a range of cells in a Google Spreadsheet. Overwrites existing data in the range.',
+  {
+    spreadsheet_id: z.string().describe('The spreadsheet ID'),
+    range: z
+      .string()
+      .describe('A1 notation for the top-left cell (e.g. "Sheet1!A1")'),
+    data: z
+      .array(z.array(z.union([z.string(), z.number(), z.boolean()])))
+      .describe('2D array of values (rows × columns)'),
+    input_option: z
+      .enum(['RAW', 'USER_ENTERED'])
+      .optional()
+      .describe(
+        'How values are interpreted. USER_ENTERED (default) parses formulas/numbers. RAW stores as-is.',
+      ),
+  },
+  async (args) => textResult(await ipcRequest('write_range', args)),
+);
+
+server.tool(
+  'append_rows',
+  'Append rows to the end of a sheet tab. Does not overwrite existing data.',
+  {
+    spreadsheet_id: z.string().describe('The spreadsheet ID'),
+    sheet: z.string().describe('Tab name to append to (e.g. "Sheet1")'),
+    data: z
+      .array(z.array(z.union([z.string(), z.number(), z.boolean()])))
+      .describe('2D array of rows to append'),
+    input_option: z
+      .enum(['RAW', 'USER_ENTERED'])
+      .optional()
+      .describe('How values are interpreted (default: USER_ENTERED)'),
+  },
+  async (args) => textResult(await ipcRequest('append_rows', args)),
+);
+
+server.tool(
+  'list_sheets',
+  'List all sheet tabs in a Google Spreadsheet. Returns tab names, IDs, and dimensions.',
+  {
+    spreadsheet_id: z.string().describe('The spreadsheet ID'),
+  },
+  async (args) => textResult(await ipcRequest('list_sheets', args)),
+);
+
+server.tool(
+  'add_sheet',
+  'Add a new sheet tab to an existing Google Spreadsheet.',
+  {
+    spreadsheet_id: z.string().describe('The spreadsheet ID'),
+    title: z.string().describe('Name for the new tab'),
+  },
+  async (args) => textResult(await ipcRequest('add_sheet', args)),
+);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
