@@ -8,6 +8,7 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
+import { processRemindersIpc } from './reminders-ipc.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
@@ -113,6 +114,14 @@ export function startIpcWatcher(deps: IpcDeps): void {
           { err, sourceGroup },
           'Error reading IPC messages directory',
         );
+      }
+
+      // Process Apple Reminders IPC requests from this group
+      try {
+        const groupIpcDir = path.join(ipcBaseDir, sourceGroup);
+        processRemindersIpc(groupIpcDir);
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Error processing reminders IPC');
       }
 
       // Process tasks from this group's IPC directory
