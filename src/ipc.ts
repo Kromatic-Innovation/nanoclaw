@@ -14,7 +14,9 @@ import { processGmailIpc } from './gmail-ipc.js';
 import { processMapsIpc } from './maps-ipc.js';
 import { processRemindersIpc } from './reminders-ipc.js';
 import { processSentryIpc } from './sentry-ipc.js';
+import { processSheetsIpc } from './sheets-ipc.js';
 import { processSpotifyIpc } from './spotify-ipc.js';
+import { processMemoryIpc } from './memory-ipc.js';
 import { RegisteredGroup } from './types.js';
 
 /**
@@ -35,6 +37,8 @@ function formatToolLabel(toolName: string): string {
     spotify: 'Checking Spotify',
     'apple-reminders': 'Checking reminders',
     'github-issues': 'Checking GitHub',
+    'google-sheets': 'Updating triage rules',
+    memory: 'Saving to memory',
   };
 
   const serverLabel = labels[server];
@@ -233,6 +237,20 @@ export function startIpcWatcher(deps: IpcDeps): void {
         processSpotifyIpc(path.join(ipcBaseDir, sourceGroup));
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error processing spotify IPC');
+      }
+
+      // Process Google Sheets IPC requests (request-response bridge)
+      try {
+        processSheetsIpc(path.join(ipcBaseDir, sourceGroup));
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Error processing sheets IPC');
+      }
+
+      // Process Memory IPC requests (request-response bridge)
+      try {
+        processMemoryIpc(path.join(ipcBaseDir, sourceGroup));
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Error processing memory IPC');
       }
 
       // Process status updates from container (tool call notifications)

@@ -182,6 +182,48 @@ function buildVolumeMounts(
   fs.mkdirSync(path.join(groupIpcDir, 'github-issues', 'responses'), {
     recursive: true,
   });
+  fs.mkdirSync(path.join(groupIpcDir, 'gmail', 'requests'), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'gmail', 'responses'), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'calendar', 'requests'), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'calendar', 'responses'), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'sentry', 'requests'), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'sentry', 'responses'), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'maps', 'requests'), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'maps', 'responses'), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'spotify', 'requests'), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'spotify', 'responses'), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'sheets', 'requests'), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'sheets', 'responses'), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'memory', 'requests'), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'memory', 'responses'), {
+    recursive: true,
+  });
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',

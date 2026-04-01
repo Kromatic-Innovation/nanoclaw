@@ -53,8 +53,10 @@ When asked to create a task: if the work belongs to a repo, create a GitHub Issu
 
 - `list_calendars` — list all calendars
 - `list_events` — list upcoming events (params: calendar, days, time_min, time_max, limit)
-- `create_event` — create an event (params: summary, start, end, calendar, description, location)
-- `update_event` — update an event (params: event_id, calendar, summary, start, end, description, location)
+- `create_event` — create an event (params: summary, start, end, calendar, description, location, free)
+- `update_event` — update an event (params: event_id, calendar, summary, start, end, description, location, free)
+
+Set `free: true` to show the event as "Free" (transparent), or `free: false` / omit for "Busy" (default).
 
 ### Gmail (`mcp__gmail__*`)
 
@@ -75,6 +77,7 @@ Send/draft operations (permission-gated by contact database):
 - `draft_reply_all` — draft a reply-all (params: message_id, body, allow_self)
 - `add_labels` — add labels to a message (params: message_id, labels)
 - `remove_labels` — remove labels (params: message_id, labels)
+- `archive_messages` — archive emails by removing from inbox (params: message_ids array). **Always allowed** — non-destructive, no permission check needed.
 
 ### Sentry (`mcp__sentry__*`)
 
@@ -107,9 +110,40 @@ Files you create are saved in `/workspace/group/`. Use this for notes, research,
 
 ## Memory
 
+You have two memory systems. Use them proactively — don't wait to be asked to remember things.
+
+### Structured memory (`mcp__memory__*` tools)
+
+Use these tools for important, long-lived information you want to persist and search across sessions.
+
+**What to remember:**
+
+- User preferences and corrections ("I prefer metric units", "Don't use emoji")
+- Facts about people, projects, relationships ("Alice is the PM for Project X")
+- Learned patterns ("This group prefers bullet points over paragraphs")
+- Decisions and their rationale ("We chose SQLite over Postgres because...")
+
+**How to decide scope:**
+
+- **global** — information that any group/conversation should know. Shared facts, universal preferences, project knowledge.
+- **group** — information specific to this conversation partner or channel. Personal preferences, private context.
+
+**When to save:**
+
+- User corrects you → save as type `correction`
+- User states a preference → save as type `preference`
+- You learn a new fact → save as type `fact`
+- You notice a pattern → save as type `pattern`
+
+**Search before saving** — use `search_memory` to check if you already know something before saving a duplicate.
+
+**Cost note:** Memory tools are local (no API calls). Don't hesitate to save or search.
+
+### Conversation archive
+
 The `conversations/` folder contains searchable history of past conversations. Use this to recall context from previous sessions.
 
-When you learn something important:
+When you learn something important that doesn't fit the structured memory types above:
 
 - Create files for structured data (e.g., `customers.md`, `preferences.md`)
 - Split files larger than 500 lines into folders

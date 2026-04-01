@@ -380,6 +380,8 @@ async function runQuery(
   sentryMcpPath: string,
   mapsMcpPath: string,
   spotifyMcpPath: string,
+  sheetsMcpPath: string,
+  memoryMcpPath: string,
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
@@ -481,6 +483,7 @@ async function runQuery(
         'mcp__sentry__*',
         'mcp__google-maps__*',
         'mcp__spotify__*',
+        'mcp__memory__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -533,6 +536,19 @@ async function runQuery(
           command: 'node',
           args: [spotifyMcpPath],
           env: {},
+        },
+        'google-sheets': {
+          command: 'node',
+          args: [sheetsMcpPath],
+          env: {},
+        },
+        memory: {
+          command: 'node',
+          args: [memoryMcpPath],
+          env: {
+            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+          },
         },
       },
       hooks: {
@@ -660,6 +676,8 @@ async function main(): Promise<void> {
   const sentryMcpPath = path.join(__dirname, 'sentry-mcp-stdio.js');
   const mapsMcpPath = path.join(__dirname, 'maps-mcp-stdio.js');
   const spotifyMcpPath = path.join(__dirname, 'spotify-mcp-stdio.js');
+  const sheetsMcpPath = path.join(__dirname, 'sheets-mcp-stdio.js');
+  const memoryMcpPath = path.join(__dirname, 'memory-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
@@ -701,6 +719,8 @@ async function main(): Promise<void> {
         sentryMcpPath,
         mapsMcpPath,
         spotifyMcpPath,
+        sheetsMcpPath,
+        memoryMcpPath,
         containerInput,
         sdkEnv,
         resumeAt,
