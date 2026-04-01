@@ -135,6 +135,18 @@ Use these tools for important, long-lived information you want to persist and se
 - You learn a new fact → save as type `fact`
 - You notice a pattern → save as type `pattern`
 
+**Sensitivity:**
+
+- **public** (default) — can be freely shared with anyone in any group
+- **private** — you may use this for reasoning, but NEVER disclose the content to non-main groups
+
+Use `sensitivity: private` for: home addresses, personal phone numbers, personal email addresses, financial info, health info, relationship details, or anything the user would not want shared with a colleague or acquaintance.
+
+**CRITICAL disclosure rules for private memories:**
+
+- In the **main group**: you may freely reference private memories.
+- In **any other group**: you may USE private memories for reasoning (e.g., calculate travel time from a private home address) but you must NEVER include the private data itself in your response. If asked directly, say "I can't share that information in this conversation."
+
 **Search before saving** — use `search_memory` to check if you already know something before saving a duplicate.
 
 **Cost note:** Memory tools are local (no API calls). Don't hesitate to save or search.

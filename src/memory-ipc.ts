@@ -29,6 +29,7 @@ interface MemoryFile {
   id: string;
   type: string;
   scope: string;
+  sensitivity: string;
   tags: string[];
   created: string;
   source_group: string;
@@ -62,6 +63,7 @@ function parseFrontmatter(raw: string): MemoryFile | null {
     id: meta.id || '',
     type: meta.type || '',
     scope: meta.scope || 'global',
+    sensitivity: meta.sensitivity || 'public',
     tags,
     created: meta.created || '',
     source_group: meta.source_group || '',
@@ -98,6 +100,7 @@ function memoryToSummary(m: MemoryFile) {
     id: m.id,
     type: m.type,
     scope: m.scope,
+    sensitivity: m.sensitivity,
     tags: m.tags,
     created: m.created,
     source_group: m.source_group,
@@ -116,8 +119,12 @@ function regenerateGlobalIndex(): void {
   if (memories.length === 0) {
     lines.push('No global memories saved yet.');
   } else {
-    lines.push('| ID | Type | Tags | Source | Created | Preview |');
-    lines.push('|----|------|------|--------|---------|---------|');
+    lines.push(
+      '| ID | Type | Sensitivity | Tags | Source | Created | Preview |',
+    );
+    lines.push(
+      '|----|------|-------------|------|--------|---------|---------|',
+    );
     for (const m of memories) {
       const preview = m.content
         .slice(0, 60)
@@ -125,7 +132,7 @@ function regenerateGlobalIndex(): void {
         .replace(/\n/g, ' ');
       const date = m.created.split('T')[0] || '';
       lines.push(
-        `| ${m.id} | ${m.type} | ${m.tags.join(', ')} | ${m.source_group} | ${date} | ${preview} |`,
+        `| ${m.id} | ${m.type} | ${m.sensitivity} | ${m.tags.join(', ')} | ${m.source_group} | ${date} | ${preview} |`,
       );
     }
   }
@@ -195,6 +202,7 @@ async function handleRequest(req: MemoryRequest): Promise<unknown> {
 
       const content = args.content as string;
       const type = args.type as string;
+      const sensitivity = (args.sensitivity as string) || 'public';
       const tags = (args.tags as string[]) || [];
 
       // Dedup check
@@ -214,6 +222,7 @@ async function handleRequest(req: MemoryRequest): Promise<unknown> {
         `id: ${id}`,
         `type: ${type}`,
         `scope: global`,
+        `sensitivity: ${sensitivity}`,
         `tags: [${tags.join(', ')}]`,
         `created: ${new Date().toISOString()}`,
         `source_group: ${sourceGroup}`,

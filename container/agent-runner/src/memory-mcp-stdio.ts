@@ -80,6 +80,7 @@ interface MemoryFile {
   id: string;
   type: string;
   scope: string;
+  sensitivity: string;
   tags: string[];
   created: string;
   source_group: string;
@@ -113,6 +114,7 @@ function parseFrontmatter(raw: string): MemoryFile | null {
     id: meta.id || '',
     type: meta.type || '',
     scope: meta.scope || 'group',
+    sensitivity: meta.sensitivity || 'public',
     tags,
     created: meta.created || '',
     source_group: meta.source_group || '',
@@ -124,6 +126,7 @@ function buildMemoryFile(
   id: string,
   type: string,
   scope: string,
+  sensitivity: string,
   tags: string[],
   content: string,
 ): string {
@@ -132,6 +135,7 @@ function buildMemoryFile(
     `id: ${id}`,
     `type: ${type}`,
     `scope: ${scope}`,
+    `sensitivity: ${sensitivity}`,
     `tags: [${tags.join(', ')}]`,
     `created: ${new Date().toISOString()}`,
     `source_group: ${GROUP_FOLDER}`,
@@ -191,6 +195,7 @@ function memoryToSummary(m: MemoryFile) {
     id: m.id,
     type: m.type,
     scope: m.scope,
+    sensitivity: m.sensitivity,
     tags: m.tags,
     created: m.created,
     source_group: m.source_group,
@@ -260,6 +265,12 @@ server.tool(
       .describe(
         'preference = user preference, correction = learned from a mistake, fact = factual information, pattern = observed behavior pattern',
       ),
+    sensitivity: z
+      .enum(['public', 'private'])
+      .default('public')
+      .describe(
+        'public = can be shared with anyone, private = agent can use for reasoning but must not disclose to non-main groups (e.g. home address, personal contacts)',
+      ),
     tags: z
       .array(z.string())
       .optional()
@@ -267,6 +278,7 @@ server.tool(
   },
   async (args) => {
     const tags = args.tags || [];
+    const sensitivity = args.sensitivity || 'public';
 
     if (args.scope === 'group') {
       const id = generateId();
@@ -274,6 +286,7 @@ server.tool(
         id,
         args.type,
         'group',
+        sensitivity,
         tags,
         args.content,
       );
@@ -291,6 +304,7 @@ server.tool(
       await ipcRequest('save_memory', {
         content: args.content,
         type: args.type,
+        sensitivity,
         tags,
       }),
     );
