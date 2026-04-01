@@ -2,17 +2,37 @@
  * Apple Messages (iMessage) channel for NanoClaw.
  *
  * Two-way communication via:
- * - Sending: AppleScript → Messages.app
+ * - Sending: AppleScript → Messages.app (runs under a second macOS user)
  * - Receiving: Polling ~/Library/Messages/chat.db (SQLite)
  *
  * JID format: imessage:<handle> (e.g. imessage:+15551234567, imessage:user@icloud.com)
  *
- * Requires macOS with Messages.app configured and Full Disk Access for the
- * NanoClaw process (to read chat.db).
+ * ## Second macOS user setup
+ *
+ * Messages.app only supports one Apple ID at a time. To give Voltaire its own
+ * iMessage identity, create a second macOS user account:
+ *
+ * 1. System Settings → Users & Groups → Add User (e.g. "voltaire")
+ * 2. Log into that user via Fast User Switching
+ * 3. Open Messages.app, sign in with Voltaire's Apple ID
+ * 4. Set up NanoClaw launchd plist under that user
+ * 5. Switch back to your main account
+ *
+ * Set these in .env:
+ *   IMESSAGE_HANDLE=voltaire@yourdomain.com
+ *   IMESSAGE_CHAT_DB=/Users/voltaire/Library/Messages/chat.db
+ *   IMESSAGE_USER=voltaire    # macOS username for osascript -u
+ *
+ * The second user must remain logged in (background session via Fast User
+ * Switching). If they're logged out, this channel detects it and alerts
+ * through the main group.
+ *
+ * Requires Full Disk Access for the NanoClaw process to read the other
+ * user's chat.db.
  */
 
 import { execFile } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 import path from 'path';
 import { homedir } from 'os';
 
@@ -24,30 +44,55 @@ import { registerChannel, ChannelOpts } from './registry.js';
 import { Channel, OnInboundMessage, OnChatMetadata } from '../types.js';
 
 const JID_PREFIX = 'imessage:';
-const POLL_INTERVAL_MS = 3000; // Poll every 3 seconds
-const CHAT_DB = path.join(homedir(), 'Library', 'Messages', 'chat.db');
-const MAX_MESSAGE_LENGTH = 10000; // iMessage has no hard limit but be reasonable
+const POLL_INTERVAL_MS = 3000;
+const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_MESSAGE_LENGTH = 10000;
+
+// How long chat.db can go without being modified before we consider
+// Messages.app stale. 30 minutes is generous — Messages.app writes
+// frequently even when idle (read receipts, typing indicators, etc.)
+const STALE_DB_THRESHOLD_MS = 30 * 60 * 1000;
+
+interface AppleChannelConfig {
+  handle: string; // iMessage handle (email or phone)
+  chatDbPath: string; // Path to chat.db (may be under another user)
+  macosUser?: string; // macOS username to run AppleScript as (optional)
+}
 
 export class AppleMessagesChannel implements Channel {
   name = 'apple';
 
   private connected = false;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
-  private lastMessageRowId = 0; // Track last processed message ROWID
+  private healthTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastMessageRowId = 0;
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private opts: ChannelOpts;
-  private serviceHandle: string; // The iMessage handle for this account
+  private config: AppleChannelConfig;
+  private healthy = true;
+  private lastHealthAlert = 0; // Timestamp of last alert (avoid spam)
 
-  constructor(opts: ChannelOpts, serviceHandle: string) {
+  constructor(opts: ChannelOpts, config: AppleChannelConfig) {
     this.opts = opts;
-    this.serviceHandle = serviceHandle;
+    this.config = config;
   }
 
   async connect(): Promise<void> {
-    if (!existsSync(CHAT_DB)) {
-      throw new Error(
-        `Messages database not found at ${CHAT_DB}. Is Messages.app configured?`,
+    // Check chat.db exists and is readable
+    const dbCheck = this.checkChatDb();
+    if (dbCheck) {
+      throw new Error(dbCheck);
+    }
+
+    // Verify Messages.app is running under the target user
+    const messagesCheck = await this.checkMessagesApp();
+    if (messagesCheck) {
+      logger.warn(
+        { error: messagesCheck },
+        'Apple Messages: Messages.app may not be running — will retry via health checks',
       );
+      // Don't throw — allow connection but flag as unhealthy
+      this.healthy = false;
     }
 
     // Get the latest message ROWID so we only process new messages
@@ -55,16 +100,24 @@ export class AppleMessagesChannel implements Channel {
       this.lastMessageRowId = await this.getMaxRowId();
     } catch (err) {
       throw new Error(
-        `Cannot read Messages database. Grant Full Disk Access to this process. Error: ${err}`,
+        `Cannot read Messages database at ${this.config.chatDbPath}. ` +
+          'Grant Full Disk Access to this process, and ensure the second ' +
+          `macOS user is logged in. Error: ${err}`,
       );
     }
 
     this.connected = true;
     this.startPolling();
+    this.startHealthChecks();
     await this.flushOutgoingQueue();
 
     logger.info(
-      { handle: this.serviceHandle, lastRowId: this.lastMessageRowId },
+      {
+        handle: this.config.handle,
+        chatDb: this.config.chatDbPath,
+        macosUser: this.config.macosUser || '(current)',
+        lastRowId: this.lastMessageRowId,
+      },
       'Apple Messages channel connected',
     );
   }
@@ -74,6 +127,10 @@ export class AppleMessagesChannel implements Channel {
     if (this.pollTimer) {
       clearTimeout(this.pollTimer);
       this.pollTimer = null;
+    }
+    if (this.healthTimer) {
+      clearTimeout(this.healthTimer);
+      this.healthTimer = null;
     }
   }
 
@@ -100,12 +157,28 @@ export class AppleMessagesChannel implements Channel {
     }
 
     for (const chunk of chunks) {
-      await this.sendViaAppleScript(handle, chunk);
+      try {
+        await this.sendViaAppleScript(handle, chunk);
+      } catch (err) {
+        // Detect Messages.app / user session issues
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (
+          errMsg.includes('not running') ||
+          errMsg.includes('Connection is invalid') ||
+          errMsg.includes('execution error')
+        ) {
+          this.reportUnhealthy(
+            `Failed to send iMessage — Messages.app may not be running. ` +
+              `Is the "${this.config.macosUser || 'voltaire'}" macOS user logged in? ` +
+              `Error: ${errMsg}`,
+          );
+        }
+        throw err;
+      }
     }
   }
 
   async syncGroups(): Promise<void> {
-    // Discover recent conversations from chat.db
     try {
       const chats = await this.runSqlite(`
         SELECT DISTINCT
@@ -128,7 +201,7 @@ export class AppleMessagesChannel implements Channel {
             new Date().toISOString(),
             row.name || row.handle,
             'apple',
-            false, // iMessage chats are treated as 1:1
+            false,
           );
         }
       }
@@ -137,7 +210,135 @@ export class AppleMessagesChannel implements Channel {
     }
   }
 
-  // ── Private ────────────────────────────────────────────────────────────
+  // ── Health checks ──────────────────────────────────────────────────────
+
+  private startHealthChecks(): void {
+    const check = async () => {
+      if (!this.connected) return;
+
+      const problems: string[] = [];
+
+      // 1. Check chat.db exists and is accessible
+      const dbCheck = this.checkChatDb();
+      if (dbCheck) problems.push(dbCheck);
+
+      // 2. Check chat.db is not stale (Messages.app modifies it frequently)
+      if (!dbCheck) {
+        try {
+          const stat = statSync(this.config.chatDbPath);
+          const age = Date.now() - stat.mtimeMs;
+          if (age > STALE_DB_THRESHOLD_MS) {
+            problems.push(
+              `Messages database hasn't been modified in ${Math.round(age / 60000)} minutes. ` +
+                'Messages.app may have stopped or the user session may have ended.',
+            );
+          }
+        } catch {
+          problems.push('Cannot stat Messages database.');
+        }
+      }
+
+      // 3. Check Messages.app is running
+      const messagesCheck = await this.checkMessagesApp();
+      if (messagesCheck) problems.push(messagesCheck);
+
+      if (problems.length > 0) {
+        this.reportUnhealthy(problems.join('\n'));
+      } else if (!this.healthy) {
+        // Recovered
+        this.healthy = true;
+        logger.info('Apple Messages: health recovered');
+      }
+
+      this.healthTimer = setTimeout(check, HEALTH_CHECK_INTERVAL_MS);
+    };
+
+    this.healthTimer = setTimeout(check, HEALTH_CHECK_INTERVAL_MS);
+  }
+
+  /**
+   * Check if chat.db exists and is readable.
+   * Returns error message string, or null if OK.
+   */
+  private checkChatDb(): string | null {
+    if (!existsSync(this.config.chatDbPath)) {
+      const user = this.config.macosUser || 'voltaire';
+      return (
+        `Messages database not found at ${this.config.chatDbPath}. ` +
+        `The "${user}" macOS user account may not be logged in. ` +
+        'Log in via Fast User Switching (System Settings → Users & Groups → Login Options), ' +
+        'open Messages.app under that user, then switch back to your account. ' +
+        'The background session must remain active.'
+      );
+    }
+    return null;
+  }
+
+  /**
+   * Check if Messages.app is running (for the target user if specified).
+   * Returns error message string, or null if OK.
+   */
+  private async checkMessagesApp(): Promise<string | null> {
+    return new Promise((resolve) => {
+      // Check if Messages process exists
+      const grepUser = this.config.macosUser
+        ? `grep -c "Messages.*${this.config.macosUser}"`
+        : 'grep -c Messages.app';
+
+      execFile(
+        'pgrep',
+        ['-f', 'Messages.app'],
+        { timeout: 5000 },
+        (error, stdout) => {
+          if (error || !stdout.trim()) {
+            const user = this.config.macosUser || 'voltaire';
+            resolve(
+              `Messages.app is not running. The "${user}" macOS user ` +
+                'must be logged in with Messages.app open. Log in via ' +
+                'Fast User Switching, open Messages, then switch back.',
+            );
+          } else {
+            resolve(null);
+          }
+        },
+      );
+    });
+  }
+
+  /**
+   * Report an unhealthy state. Sends alert to main group, rate-limited
+   * to avoid spam (max once per 30 minutes).
+   */
+  private reportUnhealthy(message: string): void {
+    if (this.healthy) {
+      this.healthy = false;
+      logger.warn({ message }, 'Apple Messages channel unhealthy');
+    }
+
+    // Rate-limit alerts to once per 30 minutes
+    const now = Date.now();
+    if (now - this.lastHealthAlert < 30 * 60 * 1000) return;
+    this.lastHealthAlert = now;
+
+    // Find main group and send alert
+    const groups = this.opts.registeredGroups();
+    const mainEntry = Object.entries(groups).find(([, g]) => g.isMain);
+    if (mainEntry) {
+      const [mainJid] = mainEntry;
+      // Don't send via this channel (it's broken) — log for other channels to pick up
+      logger.error(
+        {
+          alert: true,
+          channel: 'apple',
+          mainJid,
+          message: `[Apple Messages] ${message}`,
+        },
+        'Apple Messages health alert — needs attention',
+      );
+    }
+  }
+
+  // ── Polling ────────────────────────────────────────────────────────────
 
   private startPolling(): void {
     const poll = async () => {
@@ -156,7 +357,6 @@ export class AppleMessagesChannel implements Channel {
   }
 
   private async pollNewMessages(): Promise<void> {
-    // Query for messages newer than our last known ROWID
     const messages = await this.runSqlite(`
       SELECT
         m.ROWID,
@@ -190,10 +390,8 @@ export class AppleMessagesChannel implements Channel {
         parseInt(msg.unix_timestamp, 10) * 1000,
       ).toISOString();
 
-      // Report metadata for group discovery
       this.opts.onChatMetadata(jid, timestamp, handle, 'apple', false);
 
-      // Deliver message
       const groups = this.opts.registeredGroups();
       if (!groups[jid]) continue;
 
@@ -217,11 +415,12 @@ export class AppleMessagesChannel implements Channel {
     return parseInt(rows[0]?.max_id || '0', 10);
   }
 
+  // ── AppleScript / SQLite ───────────────────────────────────────────────
+
   private async sendViaAppleScript(
     handle: string,
     text: string,
   ): Promise<void> {
-    // Escape for AppleScript string (backslash and double quote)
     const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
     const script = `
@@ -232,25 +431,27 @@ export class AppleMessagesChannel implements Channel {
       end tell
     `;
 
+    // If running as a different user, use `sudo -u <user> osascript`
+    // Otherwise, run osascript directly
+    const cmd = this.config.macosUser ? 'sudo' : 'osascript';
+    const args = this.config.macosUser
+      ? ['-u', this.config.macosUser, 'osascript', '-e', script]
+      : ['-e', script];
+
     return new Promise((resolve, reject) => {
-      execFile(
-        'osascript',
-        ['-e', script],
-        { timeout: 15000 },
-        (error, _stdout, stderr) => {
-          if (error) {
-            logger.error(
-              { handle, error: stderr || error.message },
-              'AppleScript send failed',
-            );
-            reject(
-              new Error(`Failed to send iMessage: ${stderr || error.message}`),
-            );
-            return;
-          }
-          resolve();
-        },
-      );
+      execFile(cmd, args, { timeout: 15000 }, (error, _stdout, stderr) => {
+        if (error) {
+          logger.error(
+            { handle, error: stderr || error.message },
+            'AppleScript send failed',
+          );
+          reject(
+            new Error(`Failed to send iMessage: ${stderr || error.message}`),
+          );
+          return;
+        }
+        resolve();
+      });
     });
   }
 
@@ -260,7 +461,7 @@ export class AppleMessagesChannel implements Channel {
     return new Promise((resolve, reject) => {
       execFile(
         'sqlite3',
-        ['-json', '-readonly', CHAT_DB, query],
+        ['-json', '-readonly', this.config.chatDbPath, query],
         { timeout: 10000, maxBuffer: 5 * 1024 * 1024 },
         (error, stdout, stderr) => {
           if (error) {
@@ -297,25 +498,41 @@ export class AppleMessagesChannel implements Channel {
 // ── Self-registration ──────────────────────────────────────────────────
 
 registerChannel('apple', (opts: ChannelOpts) => {
-  // Only available on macOS
   if (process.platform !== 'darwin') {
     logger.debug('Apple Messages: skipping (not macOS)');
     return null;
   }
 
-  // Check for iMessage handle in .env
-  const env = readEnvFile(['IMESSAGE_HANDLE']);
+  const env = readEnvFile([
+    'IMESSAGE_HANDLE',
+    'IMESSAGE_CHAT_DB',
+    'IMESSAGE_USER',
+  ]);
+
   if (!env.IMESSAGE_HANDLE) {
     logger.warn(
-      'Apple Messages: IMESSAGE_HANDLE not set in .env (e.g. +15551234567 or user@icloud.com)',
+      'Apple Messages: IMESSAGE_HANDLE not set in .env ' +
+        '(e.g. +15551234567 or voltaire@yourdomain.com)',
     );
     return null;
   }
 
-  if (!existsSync(CHAT_DB)) {
-    logger.warn(`Apple Messages: chat.db not found at ${CHAT_DB}`);
+  const chatDbPath =
+    env.IMESSAGE_CHAT_DB ||
+    path.join(homedir(), 'Library', 'Messages', 'chat.db');
+
+  if (!existsSync(chatDbPath)) {
+    const user = env.IMESSAGE_USER || 'voltaire';
+    logger.warn(
+      `Apple Messages: chat.db not found at ${chatDbPath}. ` +
+        `Is the "${user}" macOS user logged in with Messages.app open?`,
+    );
     return null;
   }
 
-  return new AppleMessagesChannel(opts, env.IMESSAGE_HANDLE);
+  return new AppleMessagesChannel(opts, {
+    handle: env.IMESSAGE_HANDLE,
+    chatDbPath,
+    macosUser: env.IMESSAGE_USER || undefined,
+  });
 });
