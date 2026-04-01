@@ -48,12 +48,14 @@ interface GmailRequest {
 function runGmailCmd(
   wrapperArgs: string[],
   guarded: boolean,
+  account: string = '1',
 ): Promise<unknown> {
   const script = guarded ? EMAIL_ACTION_GUARD : GMAIL_WRAPPER;
+  const accountArgs = ['--account', account];
   return new Promise((resolve, reject) => {
     execFile(
       'python3',
-      [script, ...wrapperArgs],
+      [script, ...accountArgs, ...wrapperArgs],
       {
         maxBuffer: 10 * 1024 * 1024,
         timeout: 30000,
@@ -98,6 +100,7 @@ function runGmailCmd(
 
 async function handleRequest(req: GmailRequest): Promise<unknown> {
   const { tool, args } = req;
+  const account = String(args.account || '1');
 
   switch (tool) {
     // Read-only operations (no guard)
@@ -105,27 +108,35 @@ async function handleRequest(req: GmailRequest): Promise<unknown> {
       const cmdArgs = ['list'];
       if (args.query) cmdArgs.push('--query', String(args.query));
       if (args.limit) cmdArgs.push('--limit', String(args.limit));
-      return runGmailCmd(cmdArgs, false);
+      return runGmailCmd(cmdArgs, false, account);
     }
 
     case 'get_message': {
       if (!args.message_id) throw new Error('message_id is required');
       const cmdArgs = ['get', '--id', String(args.message_id)];
       if (args.format) cmdArgs.push('--format', String(args.format));
-      return runGmailCmd(cmdArgs, false);
+      return runGmailCmd(cmdArgs, false, account);
     }
 
     case 'get_thread': {
       if (!args.message_id) throw new Error('message_id is required');
-      return runGmailCmd(['thread', '--id', String(args.message_id)], false);
+      return runGmailCmd(
+        ['thread', '--id', String(args.message_id)],
+        false,
+        account,
+      );
     }
 
     case 'list_labels':
-      return runGmailCmd(['labels'], false);
+      return runGmailCmd(['labels'], false, account);
 
     case 'create_label': {
       if (!args.name) throw new Error('name is required');
-      return runGmailCmd(['label-create', '--name', String(args.name)], false);
+      return runGmailCmd(
+        ['label-create', '--name', String(args.name)],
+        false,
+        account,
+      );
     }
 
     // Mutating operations (through action guard)
@@ -144,6 +155,7 @@ async function handleRequest(req: GmailRequest): Promise<unknown> {
           String(args.body),
         ],
         true,
+        account,
       );
     }
 
@@ -158,7 +170,7 @@ async function handleRequest(req: GmailRequest): Promise<unknown> {
         String(args.body),
       ];
       if (args.allow_self) cmdArgs.push('--allow-self');
-      return runGmailCmd(cmdArgs, true);
+      return runGmailCmd(cmdArgs, true, account);
     }
 
     case 'draft_new': {
@@ -176,6 +188,7 @@ async function handleRequest(req: GmailRequest): Promise<unknown> {
           String(args.body),
         ],
         true,
+        account,
       );
     }
 
@@ -191,6 +204,7 @@ async function handleRequest(req: GmailRequest): Promise<unknown> {
           String(args.body),
         ],
         true,
+        account,
       );
     }
 
@@ -205,7 +219,7 @@ async function handleRequest(req: GmailRequest): Promise<unknown> {
         String(args.body),
       ];
       if (args.allow_self) cmdArgs.push('--allow-self');
-      return runGmailCmd(cmdArgs, true);
+      return runGmailCmd(cmdArgs, true, account);
     }
 
     case 'add_labels': {
@@ -225,6 +239,7 @@ async function handleRequest(req: GmailRequest): Promise<unknown> {
           ...args.labels.map(String),
         ],
         true,
+        account,
       );
     }
 
@@ -245,6 +260,7 @@ async function handleRequest(req: GmailRequest): Promise<unknown> {
           ...args.labels.map(String),
         ],
         true,
+        account,
       );
     }
 
@@ -262,6 +278,7 @@ async function handleRequest(req: GmailRequest): Promise<unknown> {
           const result = await runGmailCmd(
             ['label-remove', '--id', String(msgId), '--labels', 'INBOX'],
             false,
+            account,
           );
           results.push({ message_id: msgId, status: 'archived', result });
         } catch (err) {

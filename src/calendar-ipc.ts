@@ -35,11 +35,14 @@ interface CalendarRequest {
 /**
  * Run the calendar wrapper script and return parsed JSON output.
  */
-function runCalendarCmd(args: string[]): Promise<unknown> {
+function runCalendarCmd(
+  args: string[],
+  account: string = '1',
+): Promise<unknown> {
   return new Promise((resolve, reject) => {
     execFile(
       'python3',
-      [CALENDAR_WRAPPER, ...args],
+      [CALENDAR_WRAPPER, '--account', account, ...args],
       { maxBuffer: 10 * 1024 * 1024, timeout: 30000 },
       (error, stdout, stderr) => {
         if (error) {
@@ -67,10 +70,11 @@ function runCalendarCmd(args: string[]): Promise<unknown> {
 
 async function handleRequest(req: CalendarRequest): Promise<unknown> {
   const { tool, args } = req;
+  const account = String(args.account || '1');
 
   switch (tool) {
     case 'list_calendars':
-      return runCalendarCmd(['calendars']);
+      return runCalendarCmd(['calendars'], account);
 
     case 'list_events': {
       const cmdArgs = ['list'];
@@ -79,7 +83,7 @@ async function handleRequest(req: CalendarRequest): Promise<unknown> {
       if (args.time_min) cmdArgs.push('--time-min', String(args.time_min));
       if (args.time_max) cmdArgs.push('--time-max', String(args.time_max));
       if (args.limit) cmdArgs.push('--limit', String(args.limit));
-      return runCalendarCmd(cmdArgs);
+      return runCalendarCmd(cmdArgs, account);
     }
 
     case 'create_event': {
@@ -93,7 +97,7 @@ async function handleRequest(req: CalendarRequest): Promise<unknown> {
       if (args.end) cmdArgs.push('--end', String(args.end));
       if (args.free === true) cmdArgs.push('--free');
       if (args.free === false) cmdArgs.push('--busy');
-      return runCalendarCmd(cmdArgs);
+      return runCalendarCmd(cmdArgs, account);
     }
 
     case 'update_event': {
@@ -109,7 +113,7 @@ async function handleRequest(req: CalendarRequest): Promise<unknown> {
       if (args.end) cmdArgs.push('--end', String(args.end));
       if (args.free === true) cmdArgs.push('--free');
       if (args.free === false) cmdArgs.push('--busy');
-      return runCalendarCmd(cmdArgs);
+      return runCalendarCmd(cmdArgs, account);
     }
 
     default:

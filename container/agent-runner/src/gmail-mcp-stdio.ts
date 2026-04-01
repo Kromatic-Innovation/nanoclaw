@@ -52,6 +52,12 @@ function textResult(data: unknown) {
   };
 }
 
+const accountParam = z
+  .enum(['1', '2'])
+  .optional()
+  .default('1')
+  .describe('Google account to use: "1" (default/primary) or "2" (secondary)');
+
 const server = new McpServer({ name: 'gmail', version: '1.0.0' });
 
 // --- Read-only ---
@@ -68,6 +74,7 @@ server.tool(
       .number()
       .optional()
       .describe('Maximum number of messages to return'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('list_messages', args)),
 );
@@ -81,6 +88,7 @@ server.tool(
       .enum(['full', 'metadata', 'minimal', 'raw'])
       .optional()
       .describe('Response format'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('get_message', args)),
 );
@@ -92,12 +100,16 @@ server.tool(
     message_id: z
       .string()
       .describe('Message ID (thread is resolved from this)'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('get_thread', args)),
 );
 
-server.tool('list_labels', 'List all Gmail labels', {}, async () =>
-  textResult(await ipcRequest('list_labels', {})),
+server.tool(
+  'list_labels',
+  'List all Gmail labels',
+  { account: accountParam },
+  async (args) => textResult(await ipcRequest('list_labels', args)),
 );
 
 server.tool(
@@ -105,6 +117,7 @@ server.tool(
   'Create a new Gmail label',
   {
     name: z.string().describe('Label name'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('create_label', args)),
 );
@@ -118,6 +131,7 @@ server.tool(
     to: z.string().describe('Recipient email address'),
     subject: z.string().describe('Email subject'),
     body: z.string().describe('Email body text'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('send_new', args)),
 );
@@ -129,6 +143,7 @@ server.tool(
     message_id: z.string().describe('Message ID to reply to'),
     body: z.string().describe('Reply body text'),
     allow_self: z.boolean().optional().describe('Allow replying to self'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('send_reply_all', args)),
 );
@@ -140,6 +155,7 @@ server.tool(
     to: z.string().describe('Recipient email address'),
     subject: z.string().describe('Email subject'),
     body: z.string().describe('Email body text'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('draft_new', args)),
 );
@@ -150,6 +166,7 @@ server.tool(
   {
     message_id: z.string().describe('Message ID to reply to'),
     body: z.string().describe('Reply body text'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('draft_reply', args)),
 );
@@ -161,6 +178,7 @@ server.tool(
     message_id: z.string().describe('Message ID to reply to'),
     body: z.string().describe('Reply body text'),
     allow_self: z.boolean().optional().describe('Allow replying to self'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('draft_reply_all', args)),
 );
@@ -171,6 +189,7 @@ server.tool(
   {
     message_id: z.string().describe('Message ID'),
     labels: z.array(z.string()).describe('Label names to add'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('add_labels', args)),
 );
@@ -181,6 +200,7 @@ server.tool(
   {
     message_id: z.string().describe('Message ID'),
     labels: z.array(z.string()).describe('Label names to remove'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('remove_labels', args)),
 );
@@ -190,6 +210,7 @@ server.tool(
   'Archive emails (remove from inbox). Always allowed — this is non-destructive.',
   {
     message_ids: z.array(z.string()).describe('Message IDs to archive'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('archive_messages', args)),
 );

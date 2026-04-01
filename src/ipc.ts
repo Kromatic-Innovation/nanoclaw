@@ -10,6 +10,7 @@ import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { processCalendarIpc } from './calendar-ipc.js';
+import { processContactsIpc } from './contacts-ipc.js';
 import { processGithubIssuesIpc } from './github-issues-ipc.js';
 import { processGmailIpc } from './gmail-ipc.js';
 import { processMapsIpc } from './maps-ipc.js';
@@ -39,6 +40,7 @@ function formatToolLabel(toolName: string): string {
     'apple-reminders': 'Checking reminders',
     'github-issues': 'Checking GitHub',
     'google-sheets': 'Updating triage rules',
+    'google-contacts': 'Checking contacts',
     memory: 'Saving to memory',
   };
 
@@ -247,6 +249,13 @@ export function startIpcWatcher(deps: IpcDeps): void {
         processSheetsIpc(path.join(ipcBaseDir, sourceGroup));
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error processing sheets IPC');
+      }
+
+      // Process Google Contacts IPC requests (request-response bridge)
+      try {
+        processContactsIpc(path.join(ipcBaseDir, sourceGroup));
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Error processing contacts IPC');
       }
 
       // Process Memory IPC requests (request-response bridge)

@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""Re-authorize Google OAuth with all required scopes (including Calendar).
+"""Re-authorize Google OAuth with all required scopes.
 
 Reads existing client_id/client_secret from ~/.openclaw/secrets/google-gmail.json,
 runs the OAuth flow with all scopes, and updates the creds file with the new
-refresh token.
+refresh token. Supports --account flag for multi-account setup.
 """
 
+import argparse
 import json
 import os
 import subprocess
 import sys
 
-CREDS_FILE = os.path.expanduser("~/.openclaw/secrets/google-gmail.json")
+CREDS_FILES = {
+    "1": os.path.expanduser("~/.openclaw/secrets/google-gmail.json"),
+    "2": os.path.expanduser("~/.openclaw/secrets/google-gmail-2.json"),
+}
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
@@ -19,6 +23,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/contacts",
 ]
 
 OAUTH_SCRIPT = os.path.expanduser(
@@ -27,21 +32,38 @@ OAUTH_SCRIPT = os.path.expanduser(
 
 
 def main() -> int:
-    if not os.path.exists(CREDS_FILE):
-        print(f"Creds file not found: {CREDS_FILE}", file=sys.stderr)
+    parser = argparse.ArgumentParser(description="Re-authorize Google OAuth")
+    parser.add_argument(
+        "--account",
+        default="1",
+        choices=["1", "2"],
+        help="Google account to authorize (1 = default, 2 = secondary)",
+    )
+    args = parser.parse_args()
+
+    account = args.account
+    creds_file = CREDS_FILES[account]
+
+    # For account 2, read client_id/client_secret from the primary creds file
+    source_creds_file = CREDS_FILES["1"]
+    if not os.path.exists(source_creds_file):
+        print(f"Creds file not found: {source_creds_file}", file=sys.stderr)
         return 1
 
-    with open(CREDS_FILE) as f:
-        creds = json.load(f)
+    with open(source_creds_file) as f:
+        source_creds = json.load(f)
 
-    client_id = creds.get("client_id", "").strip()
-    client_secret = creds.get("client_secret", "").strip()
+    client_id = source_creds.get("client_id", "").strip()
+    client_secret = source_creds.get("client_secret", "").strip()
     if not client_id or not client_secret:
         print("Missing client_id or client_secret in creds file", file=sys.stderr)
         return 1
 
+    print(f"Account: {account}")
     print(f"Client ID: {client_id[:20]}...")
     print(f"Scopes: {' '.join(SCOPES)}")
+    if account == "2":
+        print("Sign in with your SECOND Google account when prompted.")
     print()
 
     env = {
@@ -83,11 +105,16 @@ def main() -> int:
         print("Please copy it manually and update the creds file", file=sys.stderr)
         return 1
 
-    # Update creds file
-    creds["refresh_token"] = refresh_token
-    with open(CREDS_FILE, "w") as f:
+    # Update creds file (for account 2, create new file with shared client creds)
+    creds = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+    }
+    os.makedirs(os.path.dirname(creds_file), exist_ok=True)
+    with open(creds_file, "w") as f:
         json.dump(creds, f, indent=2)
-    print(f"\nUpdated {CREDS_FILE} with new refresh token.")
+    print(f"\nUpdated {creds_file} with new refresh token.")
     return 0
 
 

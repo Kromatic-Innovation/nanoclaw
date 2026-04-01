@@ -55,13 +55,19 @@ function textResult(data: unknown) {
   };
 }
 
+const accountParam = z
+  .enum(['1', '2'])
+  .optional()
+  .default('1')
+  .describe('Google account to use: "1" (default/primary) or "2" (secondary)');
+
 const server = new McpServer({ name: 'google-calendar', version: '1.0.0' });
 
 server.tool(
   'list_calendars',
   'List all Google Calendar calendars',
-  {},
-  async () => textResult(await ipcRequest('list_calendars', {})),
+  { account: accountParam },
+  async (args) => textResult(await ipcRequest('list_calendars', args)),
 );
 
 server.tool(
@@ -76,6 +82,7 @@ server.tool(
     time_min: z.string().optional().describe('Start of time range (ISO 8601)'),
     time_max: z.string().optional().describe('End of time range (ISO 8601)'),
     limit: z.number().optional().describe('Maximum number of events to return'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('list_events', args)),
 );
@@ -99,6 +106,7 @@ server.tool(
       .boolean()
       .optional()
       .describe('Show as Free (true) or Busy (false, default)'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('create_event', args)),
 );
@@ -121,6 +129,7 @@ server.tool(
       .boolean()
       .optional()
       .describe('Show as Free (true) or Busy (false/default)'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('update_event', args)),
 );

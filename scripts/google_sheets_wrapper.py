@@ -32,14 +32,21 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-CREDS_FILE = os.path.expanduser(
-    os.environ.get("GMAIL_CREDS_FILE", "~/.openclaw/secrets/google-gmail.json")
-)
+CREDS_FILES = {
+    "1": os.path.expanduser(
+        os.environ.get("GMAIL_CREDS_FILE", "~/.openclaw/secrets/google-gmail.json")
+    ),
+    "2": os.path.expanduser("~/.openclaw/secrets/google-gmail-2.json"),
+}
+CREDS_FILE = CREDS_FILES["1"]  # default for backwards compat
 ITEM_TITLE = os.environ.get(
     "GMAIL_1PASSWORD_ITEM", "6ww6jmxamdxreo2pc2xpujawsq"
 )
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets"
+
+# Module-level account override (set by --account flag before commands run)
+_active_account: str = "1"
 
 
 def log(message: str) -> None:
@@ -91,13 +98,20 @@ def _op_field(item: dict, label: str) -> str:
 
 def load_creds() -> tuple[str, str, str]:
     """Load OAuth credentials. Returns (client_id, client_secret, refresh_token)."""
-    if os.path.exists(CREDS_FILE):
-        with open(CREDS_FILE) as f:
+    creds_file = CREDS_FILES.get(_active_account, CREDS_FILES["1"])
+    if os.path.exists(creds_file):
+        with open(creds_file) as f:
             creds = json.load(f)
         return (
             creds["client_id"],
             creds["client_secret"],
             creds["refresh_token"],
+        )
+
+    if _active_account != "1":
+        raise RuntimeError(
+            f"Creds file not found for account {_active_account}: {creds_file}. "
+            "Run google_reauth.py --account 2 to set up the second account."
         )
 
     log("Creds file not found, trying 1Password...")
@@ -304,8 +318,13 @@ def cmd_add_sheet(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    global _active_account
     parser = argparse.ArgumentParser(
         description="General-purpose Google Sheets wrapper"
+    )
+    parser.add_argument(
+        "--account", default="1", choices=["1", "2"],
+        help="Google account to use (1 = default, 2 = secondary)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -361,6 +380,7 @@ def main() -> None:
     p_add.add_argument("--title", required=True, help="New tab name")
 
     args = parser.parse_args()
+    _active_account = getattr(args, "account", "1")
 
     try:
         {

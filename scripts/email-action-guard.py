@@ -206,6 +206,21 @@ def passthrough(args: list[str]) -> int:
         return 1
 
 
+def _strip_account_flag(args: list[str]) -> list[str]:
+    """Return args with --account <value> removed (for permission checking)."""
+    result = []
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--account":
+            skip_next = True
+            continue
+        result.append(arg)
+    return result
+
+
 def main():
     # All args after the script name are gmail_wrapper args
     wrapper_args = sys.argv[1:]
@@ -214,7 +229,9 @@ def main():
         print("Usage: email-action-guard.py <gmail_wrapper_args...>", file=sys.stderr)
         sys.exit(1)
 
-    allowed, reason = check_permission(wrapper_args)
+    # Strip --account flag for permission checking (guard checks commands, not accounts)
+    check_args = _strip_account_flag(wrapper_args)
+    allowed, reason = check_permission(check_args)
     now = datetime.now(timezone.utc).isoformat()
 
     if allowed:

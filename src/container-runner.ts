@@ -218,6 +218,12 @@ function buildVolumeMounts(
   fs.mkdirSync(path.join(groupIpcDir, 'sheets', 'responses'), {
     recursive: true,
   });
+  fs.mkdirSync(path.join(groupIpcDir, 'contacts', 'requests'), {
+    recursive: true,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'contacts', 'responses'), {
+    recursive: true,
+  });
   fs.mkdirSync(path.join(groupIpcDir, 'memory', 'requests'), {
     recursive: true,
   });

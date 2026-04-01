@@ -23,11 +23,11 @@ interface MapsRequest {
   args: Record<string, unknown>;
 }
 
-function runMapsCmd(args: string[]): Promise<unknown> {
+function runMapsCmd(args: string[], account: string = '1'): Promise<unknown> {
   return new Promise((resolve, reject) => {
     execFile(
       'python3',
-      [MAPS_WRAPPER, ...args],
+      [MAPS_WRAPPER, '--account', account, ...args],
       { maxBuffer: 10 * 1024 * 1024, timeout: 30000 },
       (error, stdout, stderr) => {
         if (error) {
@@ -61,6 +61,7 @@ function runMapsCmd(args: string[]): Promise<unknown> {
 
 async function handleRequest(req: MapsRequest): Promise<unknown> {
   const { tool, args } = req;
+  const account = String(args.account || '1');
 
   switch (tool) {
     case 'get_directions': {
@@ -75,7 +76,7 @@ async function handleRequest(req: MapsRequest): Promise<unknown> {
       ];
       if (args.mode) cmdArgs.push('--mode', String(args.mode));
       if (args.departure) cmdArgs.push('--departure', String(args.departure));
-      return runMapsCmd(cmdArgs);
+      return runMapsCmd(cmdArgs, account);
     }
 
     case 'get_travel_time': {
@@ -90,7 +91,7 @@ async function handleRequest(req: MapsRequest): Promise<unknown> {
       ];
       if (args.mode) cmdArgs.push('--mode', String(args.mode));
       if (args.departure) cmdArgs.push('--departure', String(args.departure));
-      return runMapsCmd(cmdArgs);
+      return runMapsCmd(cmdArgs, account);
     }
 
     default:

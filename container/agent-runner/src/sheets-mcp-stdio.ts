@@ -54,6 +54,12 @@ function textResult(data: unknown) {
   };
 }
 
+const accountParam = z
+  .enum(['1', '2'])
+  .optional()
+  .default('1')
+  .describe('Google account to use: "1" (default/primary) or "2" (secondary)');
+
 const server = new McpServer({ name: 'google-sheets', version: '1.0.0' });
 
 // --- Email Contacts (specific sender rules) ---
@@ -214,6 +220,7 @@ server.tool(
       .string()
       .optional()
       .describe('Comma-separated tab names to create (default: "Sheet1")'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('create_spreadsheet', args)),
 );
@@ -226,6 +233,7 @@ server.tool(
     range: z
       .string()
       .describe('A1 notation range (e.g. "Sheet1!A1:C10", "Sheet1!A:A")'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('read_range', args)),
 );
@@ -247,6 +255,7 @@ server.tool(
       .describe(
         'How values are interpreted. USER_ENTERED (default) parses formulas/numbers. RAW stores as-is.',
       ),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('write_range', args)),
 );
@@ -264,6 +273,7 @@ server.tool(
       .enum(['RAW', 'USER_ENTERED'])
       .optional()
       .describe('How values are interpreted (default: USER_ENTERED)'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('append_rows', args)),
 );
@@ -273,6 +283,7 @@ server.tool(
   'List all sheet tabs in a Google Spreadsheet. Returns tab names, IDs, and dimensions.',
   {
     spreadsheet_id: z.string().describe('The spreadsheet ID'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('list_sheets', args)),
 );
@@ -283,6 +294,7 @@ server.tool(
   {
     spreadsheet_id: z.string().describe('The spreadsheet ID'),
     title: z.string().describe('Name for the new tab'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('add_sheet', args)),
 );

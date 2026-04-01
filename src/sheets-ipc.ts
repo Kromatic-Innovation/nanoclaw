@@ -21,7 +21,10 @@ interface SheetsRequest {
   args: Record<string, unknown>;
 }
 
-function runSheetsCmd(cmdArgs: string[]): Promise<unknown> {
+function runSheetsCmd(
+  cmdArgs: string[],
+  account: string = '1',
+): Promise<unknown> {
   return new Promise((resolve, reject) => {
     execFile(
       'python3',
@@ -53,11 +56,14 @@ function runSheetsCmd(cmdArgs: string[]): Promise<unknown> {
   });
 }
 
-function runSheetsWrapper(cmdArgs: string[]): Promise<unknown> {
+function runSheetsWrapper(
+  cmdArgs: string[],
+  account: string = '1',
+): Promise<unknown> {
   return new Promise((resolve, reject) => {
     execFile(
       'python3',
-      [SHEETS_WRAPPER, ...cmdArgs],
+      [SHEETS_WRAPPER, '--account', account, ...cmdArgs],
       {
         maxBuffer: 10 * 1024 * 1024,
         timeout: 30000,
@@ -89,6 +95,7 @@ function runSheetsWrapper(cmdArgs: string[]): Promise<unknown> {
 
 async function handleRequest(req: SheetsRequest): Promise<unknown> {
   const { tool, args } = req;
+  const account = String(args.account || '1');
 
   switch (tool) {
     case 'lookup_contact': {
@@ -172,7 +179,7 @@ async function handleRequest(req: SheetsRequest): Promise<unknown> {
       if (!args.title) throw new Error('title is required');
       const cmdArgs = ['create', '--title', String(args.title)];
       if (args.sheets) cmdArgs.push('--sheets', String(args.sheets));
-      return runSheetsWrapper(cmdArgs);
+      return runSheetsWrapper(cmdArgs, account);
     }
 
     case 'read_range': {
@@ -202,7 +209,7 @@ async function handleRequest(req: SheetsRequest): Promise<unknown> {
       ];
       if (args.input_option)
         cmdArgs.push('--input-option', String(args.input_option));
-      return runSheetsWrapper(cmdArgs);
+      return runSheetsWrapper(cmdArgs, account);
     }
 
     case 'append_rows': {
@@ -220,7 +227,7 @@ async function handleRequest(req: SheetsRequest): Promise<unknown> {
       ];
       if (args.input_option)
         cmdArgs.push('--input-option', String(args.input_option));
-      return runSheetsWrapper(cmdArgs);
+      return runSheetsWrapper(cmdArgs, account);
     }
 
     case 'list_sheets': {

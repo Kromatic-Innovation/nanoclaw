@@ -28,9 +28,16 @@ import urllib.request
 from datetime import datetime, timezone
 
 ITEM_TITLE = os.environ.get("GOOGLE_1PASSWORD_ITEM", "6ww6jmxamdxreo2pc2xpujawsq")
-CREDS_FILE = os.path.expanduser(os.environ.get("GOOGLE_CREDS_FILE", "~/.openclaw/secrets/google-gmail.json"))
+CREDS_FILES = {
+    "1": os.path.expanduser(os.environ.get("GOOGLE_CREDS_FILE", "~/.openclaw/secrets/google-gmail.json")),
+    "2": os.path.expanduser("~/.openclaw/secrets/google-gmail-2.json"),
+}
+CREDS_FILE = CREDS_FILES["1"]  # default for backwards compat
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 ROUTES_API = "https://routes.googleapis.com"
+
+# Module-level account override (set by --account flag before commands run)
+_active_account: str = "1"
 
 
 def die(message: str, code: int = 1) -> int:
@@ -77,16 +84,23 @@ def get_field(item: dict, wanted: str) -> str | None:
 
 
 def load_creds() -> tuple[str, str, str]:
-    if os.path.exists(CREDS_FILE):
-        with open(CREDS_FILE) as f:
+    creds_file = CREDS_FILES.get(_active_account, CREDS_FILES["1"])
+    if os.path.exists(creds_file):
+        with open(creds_file) as f:
             data = json.load(f)
         client_id = (data.get("client_id") or "").strip()
         client_secret = (data.get("client_secret") or "").strip()
         refresh_token = (data.get("refresh_token") or "").strip()
         missing = [n for n, v in [("client_id", client_id), ("client_secret", client_secret), ("refresh_token", refresh_token)] if not v]
         if missing:
-            raise RuntimeError(f"Missing field(s) in creds file '{CREDS_FILE}': {', '.join(missing)}")
+            raise RuntimeError(f"Missing field(s) in creds file '{creds_file}': {', '.join(missing)}")
         return client_id, client_secret, refresh_token
+
+    if _active_account != "1":
+        raise RuntimeError(
+            f"Creds file not found for account {_active_account}: {creds_file}. "
+            "Run google_reauth.py --account 2 to set up the second account."
+        )
 
     item = op_item_json(ITEM_TITLE)
     client_id = get_field(item, "client_id")
@@ -229,7 +243,12 @@ def cmd_distance(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    global _active_account
     parser = argparse.ArgumentParser(description="Minimal Google Maps wrapper (Routes API)")
+    parser.add_argument(
+        "--account", default="1", choices=["1", "2"],
+        help="Google account to use (1 = default, 2 = secondary)",
+    )
     sub = parser.add_subparsers(dest="command")
 
     p_dir = sub.add_parser("directions")
@@ -245,6 +264,7 @@ def main() -> int:
     p_dist.add_argument("--departure", help="ISO 8601 departure time")
 
     args = parser.parse_args()
+    _active_account = getattr(args, "account", "1")
     if not args.command:
         parser.print_help()
         return 1

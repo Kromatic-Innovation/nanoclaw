@@ -381,6 +381,7 @@ async function runQuery(
   mapsMcpPath: string,
   spotifyMcpPath: string,
   sheetsMcpPath: string,
+  contactsMcpPath: string,
   memoryMcpPath: string,
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
@@ -484,6 +485,7 @@ async function runQuery(
         'mcp__google-maps__*',
         'mcp__spotify__*',
         'mcp__memory__*',
+        'mcp__google-contacts__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -540,6 +542,11 @@ async function runQuery(
         'google-sheets': {
           command: 'node',
           args: [sheetsMcpPath],
+          env: {},
+        },
+        'google-contacts': {
+          command: 'node',
+          args: [contactsMcpPath],
           env: {},
         },
         memory: {
@@ -677,6 +684,7 @@ async function main(): Promise<void> {
   const mapsMcpPath = path.join(__dirname, 'maps-mcp-stdio.js');
   const spotifyMcpPath = path.join(__dirname, 'spotify-mcp-stdio.js');
   const sheetsMcpPath = path.join(__dirname, 'sheets-mcp-stdio.js');
+  const contactsMcpPath = path.join(__dirname, 'contacts-mcp-stdio.js');
   const memoryMcpPath = path.join(__dirname, 'memory-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;
@@ -720,6 +728,7 @@ async function main(): Promise<void> {
         mapsMcpPath,
         spotifyMcpPath,
         sheetsMcpPath,
+        contactsMcpPath,
         memoryMcpPath,
         containerInput,
         sdkEnv,

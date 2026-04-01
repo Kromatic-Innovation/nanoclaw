@@ -51,6 +51,12 @@ function textResult(data: unknown) {
   };
 }
 
+const accountParam = z
+  .enum(['1', '2'])
+  .optional()
+  .default('1')
+  .describe('Google account to use: "1" (default/primary) or "2" (secondary)');
+
 const server = new McpServer({ name: 'google-maps', version: '1.0.0' });
 
 server.tool(
@@ -67,6 +73,7 @@ server.tool(
       .string()
       .optional()
       .describe('Departure time (ISO 8601) for traffic-aware estimates'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('get_directions', args)),
 );
@@ -85,6 +92,7 @@ server.tool(
       .string()
       .optional()
       .describe('Departure time (ISO 8601) for traffic-aware estimates'),
+    account: accountParam,
   },
   async (args) => textResult(await ipcRequest('get_travel_time', args)),
 );
