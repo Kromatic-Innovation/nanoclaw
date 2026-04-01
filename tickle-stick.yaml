@@ -112,6 +112,36 @@ tickleStick:
         - name: escalate
           type: callback
 
+    # ── Calendar management: daily travel time + conflict detection ────────
+    # Scans calendar, calculates travel between events via Google Maps,
+    # creates travel calendar events, flags impossible back-to-backs.
+    calendar-management:
+      stages:
+        - name: gather
+          type: script
+          command: "python3"
+          args: ["scripts/fetch-calendar-management-data.py"]
+          timeout: 60000          # 60s — multiple Maps API calls
+
+        - name: classify
+          type: model
+          provider: cheap
+          input: "all"            # needs full calendar context for location inference
+          systemPrompt: "$file:config/prompts/calendar-classify.md"
+          confidenceThreshold: 0.8
+          postHook:
+            command: "python3"
+            args: ["scripts/apply-calendar-actions.py"]
+
+        - name: reason
+          type: model
+          provider: expensive
+          input: "classified:needs-attention,classified:impossible"
+          prompt: "$file:config/prompts/calendar-reason.md"
+
+        - name: post-deliver
+          type: callback
+
     weekly-retro:
       stages:
         - name: gather

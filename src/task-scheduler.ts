@@ -1328,10 +1328,11 @@ async function runTask(
   if (task.prompt.startsWith('pipeline:')) {
     const pipelinePrompt = task.prompt.slice('pipeline:'.length).trim();
 
-    // Acknowledge pipeline start (suppress for email-triage — runs every 5 min)
+    // Acknowledge pipeline start (suppress for email-triage and calendar-management)
     const pipelineLabel = pipelinePrompt.split(' ')[0];
     const isEmailTriage = pipelineLabel === 'email-triage';
-    if (!isEmailTriage) {
+    const isCalendarManagement = pipelineLabel === 'calendar-management';
+    if (!isEmailTriage && !isCalendarManagement) {
       const startMsg =
         pipelineLabel === 'daily-briefing'
           ? "I'm putting together your daily briefing now…"
@@ -1413,6 +1414,35 @@ async function runTask(
             }
             return '';
           };
+        } else if (isCalendarManagement) {
+          // Calendar management: classify resolves locations, reason handles conflicts
+          let classifyOutput = '';
+          stageCallbacks['classify'] = async (items, prompt) => {
+            classifyOutput = await processTier2Direct(items, prompt);
+            return classifyOutput;
+          };
+          stageCallbacks['reason'] = async (items, prompt) => {
+            return processTier2Direct(items, prompt);
+          };
+          stageCallbacks['post-deliver'] = async () => {
+            // Parse conflicts from classify post-hook stderr (captured in classifyOutput)
+            // and from reason stage output, send Slack DMs
+            if (classifyOutput) {
+              try {
+                await sendCalendarConflictAlerts(
+                  classifyOutput,
+                  deps,
+                  task.chat_jid,
+                );
+              } catch (alertErr) {
+                logger.warn(
+                  { err: alertErr },
+                  'Failed to send calendar conflict alerts',
+                );
+              }
+            }
+            return '';
+          };
         } else {
           // Weekly retro and other pipelines: use box-claude for expensive stages
           stageCallbacks['synthesize'] = async (items, prompt) => {
@@ -1446,6 +1476,13 @@ async function runTask(
             { totalItems: pipelineResult.totalItems },
             'Email triage pipeline completed',
           );
+        } else if (isCalendarManagement) {
+          // Calendar management: silent — conflicts sent via Slack in post-deliver
+          logger.info(
+            { totalItems: pipelineResult.totalItems },
+            'Calendar management pipeline completed',
+          );
+          result = null;
         } else if (isDailyBriefing) {
           // The briefing is the clean output of the "synthesize" stage
           const synthesizeStage = pipelineResult.stageResults.find(
@@ -1925,6 +1962,55 @@ async function sendUrgentSlackAlerts(
 }
 
 /**
+ * Parse the calendar management output for conflict items and send Slack DM alerts.
+ * Called from the calendar-management post-deliver callback.
+ */
+async function sendCalendarConflictAlerts(
+  classifyOutput: string,
+  deps: SchedulerDependencies,
+  chatJid: string,
+): Promise<void> {
+  let results: {
+    classification?: string;
+    action?: string;
+    conflict_message?: string;
+    id?: string;
+  }[];
+  try {
+    results = JSON.parse(classifyOutput);
+  } catch {
+    const match = classifyOutput.match(/\[[\s\S]*\]/);
+    if (!match) return;
+    try {
+      results = JSON.parse(match[0]);
+    } catch {
+      return;
+    }
+  }
+
+  if (!Array.isArray(results)) return;
+
+  const conflictItems = results.filter(
+    (r) => r.classification === 'impossible' || r.action === 'flag-conflict',
+  );
+  for (const item of conflictItems) {
+    const msg =
+      item.conflict_message ||
+      `Calendar conflict detected for ${item.id || 'event pair'}`;
+    const alert = `\u26a0\ufe0f ${msg}`;
+    try {
+      await deps.sendMessage(chatJid, alert);
+      logger.info({ id: item.id }, 'Sent calendar conflict alert');
+    } catch (err) {
+      logger.warn(
+        { err, id: item.id },
+        'Failed to send calendar conflict alert',
+      );
+    }
+  }
+}
+
+/**
  * Apply claw/triaged labels to all gmail items after successful briefing delivery.
  * This is called from the "post-deliver" callback stage.
  */
@@ -2201,6 +2287,91 @@ function syncWeeklyRetro(): void {
   logger.info({ taskId, cron: cronExpr, nextRun }, 'Created weekly retro task');
 }
 
+function syncCalendarManagement(): void {
+  const configPath = path.join(process.cwd(), 'config', 'private.yaml');
+  if (!fs.existsSync(configPath)) return;
+
+  let config: {
+    calendarManagement?: { enabled?: boolean; cron?: string };
+  };
+  try {
+    config = parseYaml(fs.readFileSync(configPath, 'utf-8'));
+  } catch (err) {
+    logger.warn(
+      { err },
+      'Failed to parse config/private.yaml for calendar management sync',
+    );
+    return;
+  }
+
+  const calConfig = config?.calendarManagement;
+  if (!calConfig?.enabled) {
+    logger.debug('Calendar management not enabled in config, skipping sync');
+    return;
+  }
+
+  const groups = getAllRegisteredGroups();
+  let mainJid: string | null = null;
+  let mainFolder: string | null = null;
+  for (const [jid, group] of Object.entries(groups)) {
+    if (group.isMain) {
+      mainJid = jid;
+      mainFolder = group.folder;
+      break;
+    }
+  }
+  if (!mainJid || !mainFolder) {
+    logger.warn(
+      'No main group registered yet, deferring calendar management sync',
+    );
+    return;
+  }
+
+  const taskId = 'calendar-management';
+  const cronExpr = calConfig.cron || '30 5 * * *';
+  const prompt = 'pipeline:calendar-management';
+
+  const existingTasks = getAllTasks();
+  const existing = existingTasks.find((t) => t.id === taskId);
+
+  if (existing) {
+    if (existing.schedule_value !== cronExpr) {
+      const interval = CronExpressionParser.parse(cronExpr, { tz: TIMEZONE });
+      const nextRun = interval.next().toISOString();
+      updateTask(taskId, { schedule_value: cronExpr, next_run: nextRun });
+      logger.info(
+        { taskId, cron: cronExpr, nextRun },
+        'Updated calendar management schedule',
+      );
+    }
+    if (existing.status !== 'active') {
+      updateTask(taskId, { status: 'active' });
+    }
+    return;
+  }
+
+  const interval = CronExpressionParser.parse(cronExpr, { tz: TIMEZONE });
+  const nextRun = interval.next().toISOString();
+
+  createTask({
+    id: taskId,
+    group_folder: mainFolder,
+    chat_jid: mainJid,
+    prompt,
+    schedule_type: 'cron',
+    schedule_value: cronExpr,
+    context_mode: 'isolated',
+    next_run: nextRun,
+    status: 'active',
+    created_at: new Date().toISOString(),
+  });
+
+  logger.info(
+    { taskId, cron: cronExpr, nextRun },
+    'Created calendar management task',
+  );
+}
+
 let schedulerRunning = false;
 
 /** Saved deps for on-demand pipeline triggers. */
@@ -2286,6 +2457,12 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
     syncWeeklyRetro();
   } catch (err) {
     logger.error({ err }, 'Failed to sync weekly retro task');
+  }
+
+  try {
+    syncCalendarManagement();
+  } catch (err) {
+    logger.error({ err }, 'Failed to sync calendar management task');
   }
 
   logger.info('Scheduler loop started');
