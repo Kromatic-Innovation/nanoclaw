@@ -8,6 +8,7 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
+import { processSheetsIpc } from './sheets-ipc.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
@@ -144,6 +145,17 @@ export function startIpcWatcher(deps: IpcDeps): void {
         }
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
+      }
+
+      // Process Google Sheets IPC requests
+      try {
+        const groupIpcDir = path.join(ipcBaseDir, sourceGroup);
+        processSheetsIpc(groupIpcDir);
+      } catch (err) {
+        logger.error(
+          { err, sourceGroup },
+          'Error processing Sheets IPC requests',
+        );
       }
     }
 
