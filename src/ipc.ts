@@ -8,6 +8,7 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
+import { processMapsIpc } from './maps-ipc.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
@@ -144,6 +145,13 @@ export function startIpcWatcher(deps: IpcDeps): void {
         }
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
+      }
+
+      // Process Google Maps IPC requests (request-response bridge)
+      try {
+        processMapsIpc(path.join(ipcBaseDir, sourceGroup));
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Error processing maps IPC');
       }
     }
 

@@ -375,6 +375,7 @@ async function runQuery(
   prompt: string,
   sessionId: string | undefined,
   mcpServerPath: string,
+  mapsMcpPath: string,
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
@@ -469,6 +470,7 @@ async function runQuery(
         'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*',
+        'mcp__google-maps__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -483,6 +485,11 @@ async function runQuery(
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
+        },
+        'google-maps': {
+          command: 'node',
+          args: [mapsMcpPath],
+          env: {},
         },
       },
       hooks: {
@@ -627,6 +634,7 @@ async function main(): Promise<void> {
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
+  const mapsMcpPath = path.join(__dirname, 'maps-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
@@ -683,6 +691,7 @@ async function main(): Promise<void> {
         prompt,
         sessionId,
         mcpServerPath,
+        mapsMcpPath,
         containerInput,
         sdkEnv,
         resumeAt,
