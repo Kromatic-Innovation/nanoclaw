@@ -142,6 +142,10 @@ server.tool(
   {
     message_id: z.string().describe('Message ID to reply to'),
     body: z.string().describe('Reply body text'),
+    cc: z
+      .string()
+      .optional()
+      .describe('Comma-separated CC recipients (email addresses)'),
     allow_self: z.boolean().optional().describe('Allow replying to self'),
     account: accountParam,
   },
@@ -177,6 +181,10 @@ server.tool(
   {
     message_id: z.string().describe('Message ID to reply to'),
     body: z.string().describe('Reply body text'),
+    cc: z
+      .string()
+      .optional()
+      .describe('Comma-separated CC recipients (email addresses)'),
     allow_self: z.boolean().optional().describe('Allow replying to self'),
     account: accountParam,
   },

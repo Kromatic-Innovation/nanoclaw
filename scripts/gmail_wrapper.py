@@ -338,7 +338,7 @@ def draft_reply(message_id: str, body: str) -> dict:
     return api_request("POST", "/drafts", payload=payload)
 
 
-def build_reply_all_message(message_id: str, body: str, allow_self: bool = False) -> tuple[dict, dict]:
+def build_reply_all_message(message_id: str, body: str, allow_self: bool = False, cc: str | None = None) -> tuple[dict, dict]:
     original = api_request("GET", f"/messages/{message_id}", params={"format": "full"})
     headers = header_map(original)
     subject = ensure_re_subject(headers.get("subject", "(no subject)"))
@@ -349,6 +349,11 @@ def build_reply_all_message(message_id: str, body: str, allow_self: bool = False
     if not allow_self:
         to_list = [a for a in to_list if a.lower() not in SELF_EMAILS]
         cc_list = [a for a in cc_list if a.lower() not in SELF_EMAILS and a.lower() not in {x.lower() for x in to_list}]
+
+    # Add extra CC recipients from --cc parameter
+    if cc:
+        extra_cc = [addr.strip() for addr in cc.split(",") if addr.strip()]
+        cc_list.extend(extra_cc)
 
     msg = EmailMessage()
     if to_list:
@@ -364,8 +369,8 @@ def build_reply_all_message(message_id: str, body: str, allow_self: bool = False
     return original, msg
 
 
-def draft_reply_all(message_id: str, body: str, allow_self: bool = False) -> dict:
-    original, msg = build_reply_all_message(message_id, body, allow_self=allow_self)
+def draft_reply_all(message_id: str, body: str, allow_self: bool = False, cc: str | None = None) -> dict:
+    original, msg = build_reply_all_message(message_id, body, allow_self=allow_self, cc=cc)
     payload = {
         "message": {
             "threadId": original.get("threadId"),
@@ -375,8 +380,8 @@ def draft_reply_all(message_id: str, body: str, allow_self: bool = False) -> dic
     return api_request("POST", "/drafts", payload=payload)
 
 
-def send_reply_all(message_id: str, body: str, allow_self: bool = False) -> dict:
-    original, msg = build_reply_all_message(message_id, body, allow_self=allow_self)
+def send_reply_all(message_id: str, body: str, allow_self: bool = False, cc: str | None = None) -> dict:
+    original, msg = build_reply_all_message(message_id, body, allow_self=allow_self, cc=cc)
     payload = {
         "threadId": original.get("threadId"),
         "raw": b64url(msg.as_bytes()),
@@ -465,13 +470,13 @@ def cmd_draft_reply(args: argparse.Namespace) -> int:
 
 
 def cmd_draft_reply_all(args: argparse.Namespace) -> int:
-    data = draft_reply_all(args.id, args.body, allow_self=args.allow_self)
+    data = draft_reply_all(args.id, args.body, allow_self=args.allow_self, cc=args.cc)
     print(json.dumps(data, indent=2))
     return 0
 
 
 def cmd_send_reply_all(args: argparse.Namespace) -> int:
-    data = send_reply_all(args.id, args.body, allow_self=args.allow_self)
+    data = send_reply_all(args.id, args.body, allow_self=args.allow_self, cc=args.cc)
     print(json.dumps(data, indent=2))
     return 0
 
@@ -523,11 +528,13 @@ def parser() -> argparse.ArgumentParser:
     p_dra.add_argument("--id", required=True)
     p_dra.add_argument("--body", required=True)
     p_dra.add_argument("--allow-self", action="store_true")
+    p_dra.add_argument("--cc", default=None, help="Comma-separated CC recipients")
 
     p_sra = sub.add_parser("send-reply-all")
     p_sra.add_argument("--id", required=True)
     p_sra.add_argument("--body", required=True)
     p_sra.add_argument("--allow-self", action="store_true")
+    p_sra.add_argument("--cc", default=None, help="Comma-separated CC recipients")
 
     return p
 
