@@ -82,6 +82,7 @@ async function handleRequest(req: CalendarRequest): Promise<unknown> {
       if (args.days) cmdArgs.push('--days', String(args.days));
       if (args.time_min) cmdArgs.push('--time-min', String(args.time_min));
       if (args.time_max) cmdArgs.push('--time-max', String(args.time_max));
+      if (args.query) cmdArgs.push('--query', String(args.query));
       if (args.limit) cmdArgs.push('--limit', String(args.limit));
       return runCalendarCmd(cmdArgs, account);
     }
@@ -113,6 +114,24 @@ async function handleRequest(req: CalendarRequest): Promise<unknown> {
       if (args.end) cmdArgs.push('--end', String(args.end));
       if (args.free === true) cmdArgs.push('--free');
       if (args.free === false) cmdArgs.push('--busy');
+      return runCalendarCmd(cmdArgs, account);
+    }
+
+    case 'delete_event': {
+      if (!args.event_id)
+        throw new Error('event_id is required for delete_event');
+      const cmdArgs = ['delete', '--id', String(args.event_id)];
+      if (args.calendar) cmdArgs.push('--calendar', String(args.calendar));
+      return runCalendarCmd(cmdArgs, account);
+    }
+
+    case 'search_events': {
+      if (!args.query) throw new Error('query is required for search_events');
+      const cmdArgs = ['search', '--query', String(args.query)];
+      if (args.calendar) cmdArgs.push('--calendar', String(args.calendar));
+      if (args.days) cmdArgs.push('--days', String(args.days));
+      if (args.time_min) cmdArgs.push('--time-min', String(args.time_min));
+      if (args.time_max) cmdArgs.push('--time-max', String(args.time_max));
       return runCalendarCmd(cmdArgs, account);
     }
 

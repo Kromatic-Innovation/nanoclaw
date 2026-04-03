@@ -81,6 +81,12 @@ server.tool(
     days: z.number().optional().describe('Number of days to look ahead'),
     time_min: z.string().optional().describe('Start of time range (ISO 8601)'),
     time_max: z.string().optional().describe('End of time range (ISO 8601)'),
+    query: z
+      .string()
+      .optional()
+      .describe(
+        'Free-text search query (matches title, description, location, attendees)',
+      ),
     limit: z.number().optional().describe('Maximum number of events to return'),
     account: accountParam,
   },
@@ -132,6 +138,37 @@ server.tool(
     account: accountParam,
   },
   async (args) => textResult(await ipcRequest('update_event', args)),
+);
+
+server.tool(
+  'delete_event',
+  'Delete a calendar event by ID. This permanently removes the event.',
+  {
+    event_id: z.string().describe('Event ID to delete'),
+    calendar: z
+      .string()
+      .default('primary')
+      .describe('Calendar ID (default: primary)'),
+    account: accountParam,
+  },
+  async (args) => textResult(await ipcRequest('delete_event', args)),
+);
+
+server.tool(
+  'search_events',
+  'Search calendar events by text query',
+  {
+    query: z.string().describe('Free-text search query'),
+    calendar: z
+      .string()
+      .default('primary')
+      .describe('Calendar ID (default: primary)'),
+    days: z.number().optional().describe('Number of days to search ahead'),
+    time_min: z.string().optional().describe('Start of time range (ISO 8601)'),
+    time_max: z.string().optional().describe('End of time range (ISO 8601)'),
+    account: accountParam,
+  },
+  async (args) => textResult(await ipcRequest('search_events', args)),
 );
 
 const transport = new StdioServerTransport();

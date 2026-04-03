@@ -4,10 +4,10 @@
 Capabilities:
 - list calendars
 - list events
+- search events (free-text)
 - create events
 - update events
-
-No delete command on purpose.
+- delete events
 
 Secrets are loaded from a 1Password item via `op item get ... --format json`.
 Expected custom fields in the item:
@@ -22,8 +22,10 @@ Defaults:
 Examples:
   python3 scripts/google_calendar_wrapper.py calendars
   python3 scripts/google_calendar_wrapper.py list --calendar primary --days 7
+  python3 scripts/google_calendar_wrapper.py search --query 'standup' --days 30
   python3 scripts/google_calendar_wrapper.py create --summary 'Demo' --start '2026-03-23T10:00:00-04:00' --end '2026-03-23T10:30:00-04:00'
   python3 scripts/google_calendar_wrapper.py update --id EVENT_ID --summary 'Updated title'
+  python3 scripts/google_calendar_wrapper.py delete --id EVENT_ID
 """
 
 from __future__ import annotations
@@ -255,16 +257,18 @@ def cmd_calendars(_args: argparse.Namespace) -> int:
 
 def cmd_list(args: argparse.Namespace) -> int:
     now = datetime.now(timezone.utc)
-    params = {
+    params: dict[str, str] = {
         "singleEvents": "true",
         "orderBy": "startTime",
         "timeMin": args.time_min or iso_utc(now),
-        "maxResults": args.limit,
+        "maxResults": str(args.limit),
     }
     if args.time_max:
         params["timeMax"] = args.time_max
     elif args.days:
         params["timeMax"] = iso_utc(now + timedelta(days=args.days))
+    if getattr(args, "query", None):
+        params["q"] = args.query
     data = api_request("GET", calendar_path(args.calendar, "/events"), params=params)
     print(json.dumps([clean_event(e) for e in data.get("items", [])], indent=2))
     return 0
@@ -306,6 +310,30 @@ def cmd_update(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_delete(args: argparse.Namespace) -> int:
+    api_request("DELETE", calendar_path(args.calendar, f"/events/{urllib.parse.quote(args.id, safe='')}"))
+    print(json.dumps({"deleted": True, "event_id": args.id}))
+    return 0
+
+
+def cmd_search(args: argparse.Namespace) -> int:
+    now = datetime.now(timezone.utc)
+    params: dict[str, str] = {
+        "singleEvents": "true",
+        "orderBy": "startTime",
+        "q": args.query,
+        "timeMin": args.time_min or iso_utc(now),
+        "maxResults": str(args.limit),
+    }
+    if args.time_max:
+        params["timeMax"] = args.time_max
+    elif args.days:
+        params["timeMax"] = iso_utc(now + timedelta(days=args.days))
+    data = api_request("GET", calendar_path(args.calendar, "/events"), params=params)
+    print(json.dumps([clean_event(e) for e in data.get("items", [])], indent=2))
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Minimal Google Calendar wrapper")
     p.add_argument(
@@ -322,6 +350,15 @@ def parser() -> argparse.ArgumentParser:
     p_list.add_argument("--time-min")
     p_list.add_argument("--time-max")
     p_list.add_argument("--limit", type=int, default=25)
+    p_list.add_argument("--query", help="Free-text search query")
+
+    p_search = sub.add_parser("search")
+    p_search.add_argument("--calendar", default=DEFAULT_CALENDAR)
+    p_search.add_argument("--query", required=True, help="Free-text search query")
+    p_search.add_argument("--days", type=int, default=30)
+    p_search.add_argument("--time-min")
+    p_search.add_argument("--time-max")
+    p_search.add_argument("--limit", type=int, default=25)
 
     p_create = sub.add_parser("create")
     p_create.add_argument("--calendar", default=DEFAULT_CALENDAR)
@@ -344,6 +381,10 @@ def parser() -> argparse.ArgumentParser:
     p_update.add_argument("--free", action="store_true", help="Show as Free")
     p_update.add_argument("--busy", action="store_true", help="Show as Busy")
 
+    p_delete = sub.add_parser("delete")
+    p_delete.add_argument("--calendar", default=DEFAULT_CALENDAR)
+    p_delete.add_argument("--id", required=True)
+
     return p
 
 
@@ -360,6 +401,10 @@ def main() -> int:
             return cmd_create(args)
         if args.command == "update":
             return cmd_update(args)
+        if args.command == "delete":
+            return cmd_delete(args)
+        if args.command == "search":
+            return cmd_search(args)
         return die("Unknown command")
     except Exception as e:
         return die(str(e))
