@@ -7,6 +7,7 @@ import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
+import { processServiceIpc } from './service-ipc.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
@@ -144,6 +145,13 @@ export function startIpcWatcher(deps: IpcDeps): void {
         }
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
+      }
+
+      // Service management IPC (restart, reload, status)
+      try {
+        processServiceIpc(path.join(ipcBaseDir, sourceGroup), isMain);
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Error processing Service IPC');
       }
     }
 

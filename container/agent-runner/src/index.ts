@@ -469,6 +469,7 @@ async function runQuery(
         'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*',
+        'mcp__nanoclaw-service__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -483,6 +484,16 @@ async function runQuery(
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
+        },
+        'nanoclaw-service': {
+          command: 'node',
+          args: [
+            path.join(
+              path.dirname(fileURLToPath(import.meta.url)),
+              'service-mcp-stdio.js',
+            ),
+          ],
+          env: {},
         },
       },
       hooks: {
