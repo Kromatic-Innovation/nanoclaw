@@ -146,6 +146,10 @@ server.tool(
       .string()
       .optional()
       .describe('Comma-separated CC recipients (email addresses)'),
+    bcc: z
+      .string()
+      .optional()
+      .describe('Comma-separated BCC recipients (email addresses)'),
     allow_self: z.boolean().optional().describe('Allow replying to self'),
     account: accountParam,
   },
@@ -185,6 +189,10 @@ server.tool(
       .string()
       .optional()
       .describe('Comma-separated CC recipients (email addresses)'),
+    bcc: z
+      .string()
+      .optional()
+      .describe('Comma-separated BCC recipients (email addresses)'),
     allow_self: z.boolean().optional().describe('Allow replying to self'),
     account: accountParam,
   },

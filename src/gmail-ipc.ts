@@ -170,6 +170,7 @@ async function handleRequest(req: GmailRequest): Promise<unknown> {
         String(args.body),
       ];
       if (args.cc) cmdArgs.push('--cc', String(args.cc));
+      if (args.bcc) cmdArgs.push('--bcc', String(args.bcc));
       if (args.allow_self) cmdArgs.push('--allow-self');
       return runGmailCmd(cmdArgs, true, account);
     }
@@ -220,6 +221,7 @@ async function handleRequest(req: GmailRequest): Promise<unknown> {
         String(args.body),
       ];
       if (args.cc) cmdArgs.push('--cc', String(args.cc));
+      if (args.bcc) cmdArgs.push('--bcc', String(args.bcc));
       if (args.allow_self) cmdArgs.push('--allow-self');
       return runGmailCmd(cmdArgs, true, account);
     }
