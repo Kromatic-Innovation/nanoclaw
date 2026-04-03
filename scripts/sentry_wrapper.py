@@ -38,13 +38,19 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-# Load config
+# Load config — try private config loader first, fall back to env vars
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from load_private_config import load_private_config
-
-_PRIVATE = load_private_config()
-SENTRY_BASE_URL = _PRIVATE["sentry"]["baseUrl"].rstrip("/")
-SENTRY_ORG = _PRIVATE["sentry"]["org"]
+try:
+    from load_private_config import load_private_config
+    _PRIVATE = load_private_config()
+    SENTRY_BASE_URL = _PRIVATE["sentry"]["baseUrl"].rstrip("/")
+    SENTRY_ORG = _PRIVATE["sentry"]["org"]
+except (ImportError, KeyError):
+    SENTRY_BASE_URL = os.environ.get("SENTRY_BASE_URL", "https://sentry.io").rstrip("/")
+    SENTRY_ORG = os.environ.get("SENTRY_ORG", "")
+    if not SENTRY_ORG:
+        print(json.dumps({"error": "SENTRY_ORG env var is required when load_private_config is unavailable"}))
+        sys.exit(1)
 
 
 def die(message: str, code: int = 1) -> int:
