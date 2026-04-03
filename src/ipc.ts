@@ -7,6 +7,7 @@ import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
+import { processDocsIpc } from './docs-ipc.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
@@ -144,6 +145,17 @@ export function startIpcWatcher(deps: IpcDeps): void {
         }
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
+      }
+
+      // Process Google Docs IPC requests
+      try {
+        const groupIpcDir = path.join(ipcBaseDir, sourceGroup);
+        processDocsIpc(groupIpcDir);
+      } catch (err) {
+        logger.error(
+          { err, sourceGroup },
+          'Error processing Docs IPC requests',
+        );
       }
     }
 
