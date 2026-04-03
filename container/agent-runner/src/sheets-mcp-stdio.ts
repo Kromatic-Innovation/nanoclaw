@@ -133,6 +133,15 @@ server.tool(
   async (args) => textResult(await ipcRequest('update_contact', args)),
 );
 
+server.tool(
+  'delete_contact',
+  'Delete a contact by email address. Permanently removes the contact from the Email Contacts tab.',
+  {
+    email: z.string().describe('Email address of the contact to delete'),
+  },
+  async (args) => textResult(await ipcRequest('delete_contact', args)),
+);
+
 // --- Tag Rules (general category rules) ---
 
 server.tool(
@@ -158,6 +167,15 @@ server.tool(
       .describe('Human-readable description of this tag rule'),
   },
   async (args) => textResult(await ipcRequest('add_tag_rule', args)),
+);
+
+server.tool(
+  'delete_tag_rule',
+  'Delete a tag rule by tag name. Permanently removes the rule from the Tag Rules tab.',
+  {
+    tag: z.string().describe('Tag name to delete'),
+  },
+  async (args) => textResult(await ipcRequest('delete_tag_rule', args)),
 );
 
 // --- Programmatic Rules (automatic pattern matching) ---
@@ -193,6 +211,15 @@ server.tool(
       .describe('Optional custom rule ID (auto-generated if omitted)'),
   },
   async (args) => textResult(await ipcRequest('add_rule', args)),
+);
+
+server.tool(
+  'delete_rule',
+  'Delete a programmatic rule by rule ID. Permanently removes it from the Programmatic Rules tab.',
+  {
+    rule_id: z.string().describe('Rule ID to delete (e.g. "rule-1")'),
+  },
+  async (args) => textResult(await ipcRequest('delete_rule', args)),
 );
 
 // --- Triage Log (audit trail) ---

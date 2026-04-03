@@ -464,6 +464,34 @@ def update_contact(email_addr: str, data: dict) -> dict:
     return {"status": "updated", "email": email_addr}
 
 
+def delete_contact(email_addr: str) -> dict:
+    """Delete a contact row by email. Rewrites the full sheet without the row."""
+    rows = read_sheet(TAB_CONTACTS)
+    if len(rows) < 2:
+        return {"status": "not_found", "email": email_addr}
+
+    header = [h.strip().lower() for h in rows[0]]
+    email_col = header.index("email") if "email" in header else 0
+    email_lower = email_addr.strip().lower()
+
+    new_rows = [rows[0]]  # keep header
+    found = False
+    for row in rows[1:]:
+        if len(row) > email_col and row[email_col].strip().lower() == email_lower:
+            found = True
+            continue  # skip this row (delete it)
+        new_rows.append(row)
+
+    if not found:
+        return {"status": "not_found", "email": email_addr}
+
+    # Write back sheet without the deleted row
+    encoded_tab = urllib.parse.quote(TAB_CONTACTS)
+    # Clear existing data first, then write new data
+    sheets_request("PUT", f"/values/{encoded_tab}", params={"valueInputOption": "USER_ENTERED"}, payload={"values": new_rows})
+    return {"status": "deleted", "email": email_addr}
+
+
 # ---------------------------------------------------------------------------
 # Tag rules management
 # ---------------------------------------------------------------------------
@@ -496,6 +524,32 @@ def add_tag_rule(data: dict) -> dict:
     return {"status": "added", "tag": data.get("tag", "")}
 
 
+def delete_tag_rule(tag: str) -> dict:
+    """Delete a tag rule by tag name. Rewrites the full sheet without the row."""
+    rows = read_sheet(TAB_TAG_RULES)
+    if len(rows) < 2:
+        return {"status": "not_found", "tag": tag}
+
+    header = [h.strip().lower() for h in rows[0]]
+    tag_col = header.index("tag") if "tag" in header else 0
+    tag_lower = tag.strip().lower()
+
+    new_rows = [rows[0]]
+    found = False
+    for row in rows[1:]:
+        if len(row) > tag_col and row[tag_col].strip().lower() == tag_lower:
+            found = True
+            continue
+        new_rows.append(row)
+
+    if not found:
+        return {"status": "not_found", "tag": tag}
+
+    encoded_tab = urllib.parse.quote(TAB_TAG_RULES)
+    sheets_request("PUT", f"/values/{encoded_tab}", params={"valueInputOption": "USER_ENTERED"}, payload={"values": new_rows})
+    return {"status": "deleted", "tag": tag}
+
+
 # ---------------------------------------------------------------------------
 # Programmatic rules management
 # ---------------------------------------------------------------------------
@@ -514,6 +568,32 @@ def add_programmatic_rule(data: dict) -> dict:
     ]
     append_rows(TAB_RULES, [row])
     return {"status": "added", "rule_id": row[0]}
+
+
+def delete_rule(rule_id: str) -> dict:
+    """Delete a programmatic rule by rule_id. Rewrites the full sheet without the row."""
+    rows = read_sheet(TAB_RULES)
+    if len(rows) < 2:
+        return {"status": "not_found", "rule_id": rule_id}
+
+    header = [h.strip().lower() for h in rows[0]]
+    id_col = header.index("rule_id") if "rule_id" in header else 0
+    rule_lower = rule_id.strip().lower()
+
+    new_rows = [rows[0]]
+    found = False
+    for row in rows[1:]:
+        if len(row) > id_col and row[id_col].strip().lower() == rule_lower:
+            found = True
+            continue
+        new_rows.append(row)
+
+    if not found:
+        return {"status": "not_found", "rule_id": rule_id}
+
+    encoded_tab = urllib.parse.quote(TAB_RULES)
+    sheets_request("PUT", f"/values/{encoded_tab}", params={"valueInputOption": "USER_ENTERED"}, payload={"values": new_rows})
+    return {"status": "deleted", "rule_id": rule_id}
 
 
 # ---------------------------------------------------------------------------
@@ -604,6 +684,10 @@ def main():
     p_update_contact.add_argument("email", help="Email of contact to update")
     p_update_contact.add_argument("json_data", help="JSON with fields to update")
 
+    # delete-contact
+    p_del_contact = sub.add_parser("delete-contact", help="Delete a contact by email")
+    p_del_contact.add_argument("email", help="Email of contact to delete")
+
     # list-tag-rules
     sub.add_parser("list-tag-rules", help="List all tag rules")
 
@@ -611,12 +695,20 @@ def main():
     p_add_tag = sub.add_parser("add-tag-rule", help="Add a tag rule")
     p_add_tag.add_argument("json_data", help="JSON with tag rule fields")
 
+    # delete-tag-rule
+    p_del_tag = sub.add_parser("delete-tag-rule", help="Delete a tag rule by tag name")
+    p_del_tag.add_argument("tag", help="Tag name to delete")
+
     # list-programmatic-rules (alias for get-rules)
     sub.add_parser("list-programmatic-rules", help="List all programmatic rules")
 
     # add-programmatic-rule
     p_add_rule = sub.add_parser("add-programmatic-rule", help="Add a programmatic rule")
     p_add_rule.add_argument("json_data", help="JSON with rule fields")
+
+    # delete-programmatic-rule
+    p_del_rule = sub.add_parser("delete-programmatic-rule", help="Delete a programmatic rule by ID")
+    p_del_rule.add_argument("rule_id", help="Rule ID to delete")
 
     # get-triage-log
     p_triage_log = sub.add_parser("get-triage-log", help="Get recent triage log")
@@ -675,6 +767,10 @@ def main():
         result = update_contact(args.email, data)
         json.dump(result, sys.stdout)
 
+    elif args.command == "delete-contact":
+        result = delete_contact(args.email)
+        json.dump(result, sys.stdout)
+
     elif args.command == "list-tag-rules":
         rules = list_tag_rules_full()
         json.dump(rules, sys.stdout)
@@ -684,6 +780,10 @@ def main():
         result = add_tag_rule(data)
         json.dump(result, sys.stdout)
 
+    elif args.command == "delete-tag-rule":
+        result = delete_tag_rule(args.tag)
+        json.dump(result, sys.stdout)
+
     elif args.command == "list-programmatic-rules":
         rules = get_programmatic_rules()
         json.dump(rules, sys.stdout)
@@ -691,6 +791,10 @@ def main():
     elif args.command == "add-programmatic-rule":
         data = json.loads(args.json_data)
         result = add_programmatic_rule(data)
+        json.dump(result, sys.stdout)
+
+    elif args.command == "delete-programmatic-rule":
+        result = delete_rule(args.rule_id)
         json.dump(result, sys.stdout)
 
     elif args.command == "get-triage-log":

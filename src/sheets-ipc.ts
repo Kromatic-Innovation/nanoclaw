@@ -138,6 +138,11 @@ async function handleRequest(req: SheetsRequest): Promise<unknown> {
       ]);
     }
 
+    case 'delete_contact': {
+      if (!args.email) throw new Error('email is required');
+      return runSheetsCmd(['delete-contact', String(args.email)]);
+    }
+
     case 'list_tag_rules':
       return runSheetsCmd(['list-tag-rules']);
 
@@ -150,6 +155,11 @@ async function handleRequest(req: SheetsRequest): Promise<unknown> {
       };
       if (args.description) data.description = String(args.description);
       return runSheetsCmd(['add-tag-rule', JSON.stringify(data)]);
+    }
+
+    case 'delete_tag_rule': {
+      if (!args.tag) throw new Error('tag is required');
+      return runSheetsCmd(['delete-tag-rule', String(args.tag)]);
     }
 
     case 'list_rules':
@@ -165,6 +175,11 @@ async function handleRequest(req: SheetsRequest): Promise<unknown> {
       if (args.description) data.description = String(args.description);
       if (args.rule_id) data.rule_id = String(args.rule_id);
       return runSheetsCmd(['add-programmatic-rule', JSON.stringify(data)]);
+    }
+
+    case 'delete_rule': {
+      if (!args.rule_id) throw new Error('rule_id is required');
+      return runSheetsCmd(['delete-programmatic-rule', String(args.rule_id)]);
     }
 
     case 'get_triage_log': {
