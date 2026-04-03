@@ -125,6 +125,13 @@ async function handleRequest(req: CalendarRequest): Promise<unknown> {
       return runCalendarCmd(cmdArgs, account);
     }
 
+    case 'get_event': {
+      if (!args.event_id) throw new Error('event_id is required for get_event');
+      const cmdArgs = ['get', '--id', String(args.event_id)];
+      if (args.calendar) cmdArgs.push('--calendar', String(args.calendar));
+      return runCalendarCmd(cmdArgs, account);
+    }
+
     case 'search_events': {
       if (!args.query) throw new Error('query is required for search_events');
       const cmdArgs = ['search', '--query', String(args.query)];

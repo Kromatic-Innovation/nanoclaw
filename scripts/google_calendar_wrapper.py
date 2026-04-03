@@ -8,6 +8,7 @@ Capabilities:
 - create events
 - update events
 - delete events
+- get event (full detail with attendee status and counter-proposals)
 
 Secrets are loaded from a 1Password item via `op item get ... --format json`.
 Expected custom fields in the item:
@@ -228,7 +229,7 @@ def calendar_path(calendar_id: str, suffix: str = "") -> str:
     return f"/calendars/{urllib.parse.quote(calendar_id, safe='')}{suffix}"
 
 
-def clean_event(event: dict) -> dict:
+def clean_event(event: dict, full: bool = False) -> dict:
     keep = [
         "id",
         "status",
@@ -243,7 +244,32 @@ def clean_event(event: dict) -> dict:
         "attendees",
         "organizer",
     ]
-    return {k: event.get(k) for k in keep if k in event}
+    if full:
+        keep += [
+            "recurringEventId",
+            "transparency",
+            "visibility",
+            "iCalUID",
+            "conferenceData",
+            "extendedProperties",
+        ]
+    result = {k: event.get(k) for k in keep if k in event}
+    # Enrich attendees with counter-proposal info when present
+    if "attendees" in result and full:
+        for att in result["attendees"]:
+            orig = next((a for a in event.get("attendees", [])
+                         if a.get("email") == att.get("email")), {})
+            if "proposedNewTime" in orig:
+                att["proposedNewTime"] = orig["proposedNewTime"]
+    return result
+
+
+def cmd_get_event(args: argparse.Namespace) -> int:
+    """Get a single event by ID with full detail (attendees, counter-proposals)."""
+    event_path = calendar_path(args.calendar, f"/events/{urllib.parse.quote(args.id, safe='')}")
+    data = api_request("GET", event_path)
+    print(json.dumps(clean_event(data, full=True), indent=2))
+    return 0
 
 
 def cmd_calendars(_args: argparse.Namespace) -> int:
@@ -385,6 +411,10 @@ def parser() -> argparse.ArgumentParser:
     p_delete.add_argument("--calendar", default=DEFAULT_CALENDAR)
     p_delete.add_argument("--id", required=True)
 
+    p_get = sub.add_parser("get")
+    p_get.add_argument("--calendar", default=DEFAULT_CALENDAR)
+    p_get.add_argument("--id", required=True, help="Event ID to retrieve")
+
     return p
 
 
@@ -405,6 +435,8 @@ def main() -> int:
             return cmd_delete(args)
         if args.command == "search":
             return cmd_search(args)
+        if args.command == "get":
+            return cmd_get_event(args)
         return die("Unknown command")
     except Exception as e:
         return die(str(e))

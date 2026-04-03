@@ -155,6 +155,20 @@ server.tool(
 );
 
 server.tool(
+  'get_event',
+  'Get full details of a calendar event including attendee response status and counter-proposals',
+  {
+    event_id: z.string().describe('Event ID to retrieve'),
+    calendar: z
+      .string()
+      .default('primary')
+      .describe('Calendar ID (default: primary)'),
+    account: accountParam,
+  },
+  async (args) => textResult(await ipcRequest('get_event', args)),
+);
+
+server.tool(
   'search_events',
   'Search calendar events by text query',
   {
