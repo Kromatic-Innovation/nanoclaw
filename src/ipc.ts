@@ -8,6 +8,7 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
+import { processTickleStickIpc } from './tickle-stick-ipc.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
@@ -144,6 +145,13 @@ export function startIpcWatcher(deps: IpcDeps): void {
         }
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
+      }
+
+      // Tickle-stick pipeline management IPC
+      try {
+        processTickleStickIpc(path.join(ipcBaseDir, sourceGroup));
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Error processing Tickle-stick IPC');
       }
     }
 
