@@ -33,6 +33,7 @@ const READ_ONLY_COMMANDS = new Set([
   'thread',
   'labels',
   'label-create',
+  'get-attachment',
 ]);
 
 interface GmailRequest {
@@ -139,6 +140,22 @@ async function handleRequest(req: GmailRequest): Promise<unknown> {
       );
     }
 
+    case 'get_attachment': {
+      if (!args.message_id) throw new Error('message_id is required');
+      if (!args.attachment_id) throw new Error('attachment_id is required');
+      return runGmailCmd(
+        [
+          'get-attachment',
+          '--message-id',
+          String(args.message_id),
+          '--attachment-id',
+          String(args.attachment_id),
+        ],
+        false,
+        account,
+      );
+    }
+
     // Mutating operations (through action guard)
     case 'send_new': {
       if (!args.to) throw new Error('to is required');
@@ -157,6 +174,27 @@ async function handleRequest(req: GmailRequest): Promise<unknown> {
         true,
         account,
       );
+    }
+
+    case 'send_with_attachment': {
+      if (!args.to) throw new Error('to is required');
+      if (!args.subject) throw new Error('subject is required');
+      if (!args.body) throw new Error('body is required');
+      if (!args.attachment_path) throw new Error('attachment_path is required');
+      const cmdArgs = [
+        'send-with-attachment',
+        '--to',
+        String(args.to),
+        '--subject',
+        String(args.subject),
+        '--body',
+        String(args.body),
+        '--attachment-path',
+        String(args.attachment_path),
+      ];
+      if (args.attachment_name)
+        cmdArgs.push('--attachment-name', String(args.attachment_name));
+      return runGmailCmd(cmdArgs, true, account);
     }
 
     case 'send_reply_all': {

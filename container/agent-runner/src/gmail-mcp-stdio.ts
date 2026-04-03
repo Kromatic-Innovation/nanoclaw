@@ -122,6 +122,17 @@ server.tool(
   async (args) => textResult(await ipcRequest('create_label', args)),
 );
 
+server.tool(
+  'get_attachment',
+  'Download an attachment from a Gmail message by attachment ID',
+  {
+    message_id: z.string().describe('Gmail message ID'),
+    attachment_id: z.string().describe('Attachment ID from the message parts'),
+    account: accountParam,
+  },
+  async (args) => textResult(await ipcRequest('get_attachment', args)),
+);
+
 // --- Mutating (permission-gated by host) ---
 
 server.tool(
@@ -154,6 +165,25 @@ server.tool(
     account: accountParam,
   },
   async (args) => textResult(await ipcRequest('send_reply_all', args)),
+);
+
+server.tool(
+  'send_with_attachment',
+  'Send a new email with a file attachment. Permission-gated.',
+  {
+    to: z.string().describe('Recipient email address'),
+    subject: z.string().describe('Email subject'),
+    body: z.string().describe('Email body text'),
+    attachment_path: z
+      .string()
+      .describe('Local file path of the attachment to send'),
+    attachment_name: z
+      .string()
+      .optional()
+      .describe('Filename for the attachment (defaults to basename of path)'),
+    account: accountParam,
+  },
+  async (args) => textResult(await ipcRequest('send_with_attachment', args)),
 );
 
 server.tool(

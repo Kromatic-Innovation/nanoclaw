@@ -4,12 +4,14 @@
 Capabilities:
 - list messages
 - get message
+- get attachment
 - list labels
 - add/remove labels
 - create a label
 - create a new draft
 - create a reply draft
 - send a new email or reply-all (for explicitly authorized workflows)
+- send a new email with attachment
 
 Secrets are loaded from a 1Password item via `op item get ... --format json`.
 Expected custom fields in the item:
@@ -33,6 +35,8 @@ Examples:
   python3 scripts/gmail_wrapper.py draft-reply --id <message_id> --body 'Thanks — sounds good.'
   python3 scripts/gmail_wrapper.py draft-reply-all --id <message_id> --body 'Thanks everyone.'
   python3 scripts/gmail_wrapper.py send-reply-all --id <message_id> --body 'Thanks everyone.'
+  python3 scripts/gmail_wrapper.py get-attachment --message-id <msg_id> --attachment-id <att_id>
+  python3 scripts/gmail_wrapper.py send-with-attachment --to someone@example.com --subject 'See attached' --body 'Here you go.' --attachment-path /tmp/report.pdf
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ import argparse
 import base64
 import email.utils
 import json
+import mimetypes
 import os
 import subprocess
 import sys
@@ -48,6 +53,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from email.message import EmailMessage
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email import encoders
 
 ITEM_TITLE = os.environ.get("GMAIL_1PASSWORD_ITEM", "")
 
@@ -396,6 +405,99 @@ def send_reply_all(message_id: str, body: str, allow_self: bool = False, cc: str
     return api_request("POST", "/messages/send", payload=payload)
 
 
+def find_attachment_part(parts: list[dict], attachment_id: str) -> dict | None:
+    """Recursively search message parts for a part matching the attachment ID."""
+    for part in parts:
+        body = part.get("body", {})
+        if body.get("attachmentId") == attachment_id:
+            return part
+        # Recurse into nested parts (e.g. multipart/mixed)
+        nested = part.get("parts", [])
+        if nested:
+            found = find_attachment_part(nested, attachment_id)
+            if found:
+                return found
+    return None
+
+
+def get_attachment(message_id: str, attachment_id: str) -> dict:
+    """Download an attachment and return its data with metadata."""
+    # Fetch the attachment data
+    data = api_request(
+        "GET",
+        f"/messages/{message_id}/attachments/{attachment_id}",
+    )
+    # Fetch the message to find filename and mimeType from the part headers
+    message = api_request("GET", f"/messages/{message_id}", params={"format": "full"})
+    parts = message.get("payload", {}).get("parts", [])
+    part = find_attachment_part(parts, attachment_id)
+    filename = None
+    mime_type = None
+    if part:
+        filename = part.get("filename")
+        mime_type = part.get("mimeType")
+    return {
+        "data": data.get("data", ""),
+        "size": data.get("size", 0),
+        "filename": filename,
+        "mimeType": mime_type,
+    }
+
+
+def send_with_attachment(
+    to: str,
+    subject: str,
+    body: str,
+    attachment_path: str,
+    attachment_name: str | None = None,
+) -> dict:
+    """Send a new email with a file attachment."""
+    if not os.path.isfile(attachment_path):
+        raise RuntimeError(f"Attachment file not found: {attachment_path}")
+
+    if attachment_name is None:
+        attachment_name = os.path.basename(attachment_path)
+
+    mime_type, _ = mimetypes.guess_type(attachment_path)
+    if mime_type is None:
+        mime_type = "application/octet-stream"
+    main_type, sub_type = mime_type.split("/", 1)
+
+    msg = MIMEMultipart()
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    with open(attachment_path, "rb") as f:
+        attachment_data = f.read()
+
+    attachment_part = MIMEBase(main_type, sub_type)
+    attachment_part.set_payload(attachment_data)
+    encoders.encode_base64(attachment_part)
+    attachment_part.add_header(
+        "Content-Disposition", "attachment", filename=attachment_name,
+    )
+    msg.attach(attachment_part)
+
+    raw = b64url(msg.as_bytes())
+    return api_request("POST", "/messages/send", payload={"raw": raw})
+
+
+def cmd_get_attachment(args: argparse.Namespace) -> int:
+    data = get_attachment(args.message_id, args.attachment_id)
+    print(json.dumps(data, indent=2))
+    return 0
+
+
+def cmd_send_with_attachment(args: argparse.Namespace) -> int:
+    data = send_with_attachment(
+        args.to, args.subject, args.body, args.attachment_path,
+        attachment_name=args.attachment_name,
+    )
+    print(json.dumps(data, indent=2))
+    return 0
+
+
 def cmd_labels(_args: argparse.Namespace) -> int:
     data = api_request("GET", "/labels")
     print(json.dumps(data.get("labels", []), indent=2))
@@ -545,6 +647,17 @@ def parser() -> argparse.ArgumentParser:
     p_sra.add_argument("--cc", default=None, help="Comma-separated CC recipients")
     p_sra.add_argument("--bcc", default=None, help="Comma-separated BCC recipients")
 
+    p_ga = sub.add_parser("get-attachment")
+    p_ga.add_argument("--message-id", required=True)
+    p_ga.add_argument("--attachment-id", required=True)
+
+    p_sa = sub.add_parser("send-with-attachment")
+    p_sa.add_argument("--to", required=True)
+    p_sa.add_argument("--subject", required=True)
+    p_sa.add_argument("--body", required=True)
+    p_sa.add_argument("--attachment-path", required=True, help="Local file path to attach")
+    p_sa.add_argument("--attachment-name", default=None, help="Filename for the attachment (defaults to basename of path)")
+
     return p
 
 
@@ -577,6 +690,10 @@ def main() -> int:
             return cmd_draft_reply_all(args)
         if args.command == "send-reply-all":
             return cmd_send_reply_all(args)
+        if args.command == "get-attachment":
+            return cmd_get_attachment(args)
+        if args.command == "send-with-attachment":
+            return cmd_send_with_attachment(args)
         return die("Unknown command")
     except Exception as e:
         return die(str(e))
