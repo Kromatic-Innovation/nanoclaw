@@ -210,3 +210,160 @@ class TestContactsWrapperLoadCreds:
                 self._load_creds("2")
             mock_op.assert_called_once_with("2")
             mock_file.assert_called_once_with("2")
+
+
+# ---------------------------------------------------------------------------
+# gmail_wrapper tests
+# ---------------------------------------------------------------------------
+
+
+class TestGmailWrapperLoadCreds:
+    """Tests for gmail_wrapper.load_creds (uses module-level _active_account)."""
+
+    MODULE = "scripts.gmail_wrapper"
+
+    def _load_creds(self):
+        import scripts.gmail_wrapper as mod
+        return mod.load_creds()
+
+    def _set_account(self, account: str):
+        import scripts.gmail_wrapper as mod
+        mod._active_account = account
+
+    def test_load_creds_prefers_op_over_file(self):
+        self._set_account("1")
+        op_result = ("op_cid", "op_cs", "op_rt")
+        file_result = ("file_cid", "file_cs", "file_rt")
+        with (
+            patch(f"{self.MODULE}._load_creds_from_op", return_value=op_result) as mock_op,
+            patch(f"{self.MODULE}._load_creds_from_file", return_value=file_result) as mock_file,
+        ):
+            result = self._load_creds()
+            assert result == op_result
+            mock_op.assert_called_once()
+            mock_file.assert_not_called()
+
+    def test_load_creds_falls_back_to_file(self):
+        self._set_account("1")
+        file_result = ("file_cid", "file_cs", "file_rt")
+        with (
+            patch(f"{self.MODULE}._load_creds_from_op", return_value=None),
+            patch(f"{self.MODULE}._load_creds_from_file", return_value=file_result),
+        ):
+            result = self._load_creds()
+            assert result == file_result
+
+    def test_load_creds_account2_checks_op(self):
+        self._set_account("2")
+        op_result = ("op_cid_2", "op_cs_2", "op_rt_2")
+        with (
+            patch(f"{self.MODULE}._load_creds_from_op", return_value=op_result) as mock_op,
+            patch(f"{self.MODULE}._load_creds_from_file") as mock_file,
+        ):
+            result = self._load_creds()
+            assert result == op_result
+            mock_op.assert_called_once()
+            mock_file.assert_not_called()
+
+    def test_load_creds_raises_when_no_source(self):
+        self._set_account("1")
+        with (
+            patch(f"{self.MODULE}._load_creds_from_op", return_value=None),
+            patch(f"{self.MODULE}._load_creds_from_file", return_value=None),
+        ):
+            with pytest.raises(RuntimeError, match="credentials not found"):
+                self._load_creds()
+
+    def test_load_creds_op_partial_failure(self):
+        self._set_account("1")
+        file_result = ("file_cid", "file_cs", "file_rt")
+        with (
+            patch(f"{self.MODULE}._load_creds_from_op", return_value=None),
+            patch(f"{self.MODULE}._load_creds_from_file", return_value=file_result),
+        ):
+            result = self._load_creds()
+            assert result == file_result
+
+    def test_load_creds_from_op_partial_fields_returns_none(self):
+        """When 1Password has client_id but NOT refresh_token, _load_creds_from_op returns None."""
+        self._set_account("1")
+
+        def selective_op_read(uri: str) -> str | None:
+            if "client-id" in uri or "client_id" in uri:
+                return "some-client-id"
+            if "client-secret" in uri or "client_secret" in uri:
+                return "some-secret"
+            return None
+
+        with patch(f"{self.MODULE}._op_read", side_effect=selective_op_read):
+            import scripts.gmail_wrapper as mod
+            result = mod._load_creds_from_op()
+            assert result is None
+
+
+# ---------------------------------------------------------------------------
+# sheets_contact_db tests
+# ---------------------------------------------------------------------------
+
+
+class TestSheetsContactDbLoadCreds:
+    """Tests for sheets_contact_db.load_creds (single-account only)."""
+
+    MODULE = "scripts.sheets_contact_db"
+
+    def _load_creds(self):
+        import scripts.sheets_contact_db as mod
+        return mod.load_creds()
+
+    def test_load_creds_prefers_op_over_file(self):
+        op_result = ("op_cid", "op_cs", "op_rt")
+        file_result = ("file_cid", "file_cs", "file_rt")
+        with (
+            patch(f"{self.MODULE}._load_creds_from_op", return_value=op_result) as mock_op,
+            patch(f"{self.MODULE}._load_creds_from_file", return_value=file_result) as mock_file,
+        ):
+            result = self._load_creds()
+            assert result == op_result
+            mock_op.assert_called_once()
+            mock_file.assert_not_called()
+
+    def test_load_creds_falls_back_to_file(self):
+        file_result = ("file_cid", "file_cs", "file_rt")
+        with (
+            patch(f"{self.MODULE}._load_creds_from_op", return_value=None),
+            patch(f"{self.MODULE}._load_creds_from_file", return_value=file_result),
+        ):
+            result = self._load_creds()
+            assert result == file_result
+
+    def test_load_creds_raises_when_no_source(self):
+        with (
+            patch(f"{self.MODULE}._load_creds_from_op", return_value=None),
+            patch(f"{self.MODULE}._load_creds_from_file", return_value=None),
+        ):
+            with pytest.raises(RuntimeError, match="credentials not found"):
+                self._load_creds()
+
+    def test_load_creds_op_partial_failure(self):
+        file_result = ("file_cid", "file_cs", "file_rt")
+        with (
+            patch(f"{self.MODULE}._load_creds_from_op", return_value=None),
+            patch(f"{self.MODULE}._load_creds_from_file", return_value=file_result),
+        ):
+            result = self._load_creds()
+            assert result == file_result
+
+    def test_load_creds_from_op_partial_fields_returns_none(self):
+        """When 1Password has client_id but NOT refresh_token, _load_creds_from_op returns None."""
+
+        def selective_op_read(uri: str) -> str | None:
+            if "client-id" in uri or "client_id" in uri:
+                return "some-client-id"
+            if "client-secret" in uri or "client_secret" in uri:
+                return "some-secret"
+            return None
+
+        with patch(f"{self.MODULE}._op_read", side_effect=selective_op_read):
+            import scripts.sheets_contact_db as mod
+            result = mod._load_creds_from_op()
+            assert result is None
