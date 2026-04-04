@@ -470,6 +470,7 @@ async function runQuery(
         'NotebookEdit',
         'mcp__nanoclaw__*',
         'mcp__google-drive__*',
+        'mcp__google-gmail__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -491,6 +492,16 @@ async function runQuery(
             path.join(
               path.dirname(fileURLToPath(import.meta.url)),
               'drive-mcp-stdio.js',
+            ),
+          ],
+          env: {},
+        },
+        'google-gmail': {
+          command: 'node',
+          args: [
+            path.join(
+              path.dirname(fileURLToPath(import.meta.url)),
+              'gmail-mcp-stdio.js',
             ),
           ],
           env: {},

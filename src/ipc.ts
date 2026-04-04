@@ -7,6 +7,7 @@ import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { processDriveIpc } from './drive-ipc.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
+import { processGmailIpc } from './gmail-ipc.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
@@ -152,6 +153,13 @@ export function startIpcWatcher(deps: IpcDeps): void {
         processDriveIpc(path.join(ipcBaseDir, sourceGroup));
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error processing Drive IPC');
+      }
+
+      // Gmail IPC
+      try {
+        processGmailIpc(path.join(ipcBaseDir, sourceGroup));
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Error processing Gmail IPC');
       }
     }
 
