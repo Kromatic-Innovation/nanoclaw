@@ -27,6 +27,8 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+from google_auth_errors import structured_error
+
 OP_VAULT = os.environ.get("GOOGLE_1PASSWORD_VAULT", "Agent Tools")
 OP_CLIENT_ITEM = os.environ.get("GOOGLE_1PASSWORD_CLIENT", "Google OAuth Client")
 OP_CREDS_ITEMS = {
@@ -82,7 +84,7 @@ _active_account: str = "1"
 
 
 def die(message: str, code: int = 1) -> int:
-    print(json.dumps({"error": message}), file=sys.stdout)
+    print(json.dumps(structured_error(message)), file=sys.stdout)
     return code
 
 
@@ -280,7 +282,7 @@ def cmd_distance(args: argparse.Namespace) -> int:
         )
         routes = result.get("routes", [])
         if not routes:
-            print(json.dumps({"error": "No route found"}))
+            print(json.dumps(structured_error("No route found")))
             return 1
 
         route = routes[0]

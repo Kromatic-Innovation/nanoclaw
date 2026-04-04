@@ -34,6 +34,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from google_auth_errors import structured_error
+
 def _resolve_creds_file(account: str) -> str:
     """Resolve credential file path: env var > nanoclaw config > openclaw fallback."""
     suffix = "" if account == "1" else f"-{account}"
@@ -510,7 +512,7 @@ def main() -> None:
         }[args.command](args)
     except Exception as e:
         log(f"Error: {e}")
-        print(json.dumps({"error": str(e)}))
+        print(json.dumps(structured_error(str(e))))
         sys.exit(1)
 
 

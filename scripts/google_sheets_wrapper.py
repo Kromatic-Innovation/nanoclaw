@@ -32,6 +32,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from google_auth_errors import structured_error
+
 def _resolve_creds_file(account: str = "1") -> str:
     """Resolve credential file path: env var > ~/.config/nanoclaw/secrets/ > ~/.openclaw/secrets/."""
     suffix = "" if account == "1" else f"-{account}"
@@ -90,6 +92,35 @@ def _op_run(args: list[str]) -> str:
         raise RuntimeError(e.output.strip())
 
 
+def _op_item_json(item_title: str) -> dict:
+    try:
+        raw = _op_run(["op", "item", "get", item_title, "--format", "json"])
+        return json.loads(raw)
+    except RuntimeError as first_error:
+        try:
+            items = json.loads(
+                _op_run(["op", "item", "list", "--format", "json"])
+            )
+            match = next(
+                (i for i in items if i.get("title") == item_title), None
+            )
+            if match:
+                raw = _op_run(
+                    ["op", "item", "get", match["id"], "--format", "json"]
+                )
+                return json.loads(raw)
+        except Exception:
+            pass
+        raise first_error
+
+
+def _op_field(item: dict, label: str) -> str:
+    for f in item.get("fields", []):
+        if f.get("label") == label or f.get("id") == label:
+            return f.get("value", "")
+    raise RuntimeError(f"Field '{label}' not found in 1Password item")
+
+
 def _op_read(uri: str) -> str | None:
     """Read a single field via op:// URI. Returns None on failure."""
     try:
@@ -107,7 +138,6 @@ def _load_creds_from_op() -> tuple[str, str, str] | None:
 
     client_id = _op_read(f"{client_base}/client-id") or _op_read(f"{client_base}/client_id")
     client_secret = _op_read(f"{client_base}/client-secret") or _op_read(f"{client_base}/client_secret")
-
     if not client_id or not client_secret:
         client_id = _op_read(f"{creds_base}/client-id") or _op_read(f"{creds_base}/client_id")
         client_secret = _op_read(f"{creds_base}/client-secret") or _op_read(f"{creds_base}/client_secret")
@@ -125,10 +155,10 @@ def _load_creds_from_file() -> tuple[str, str, str] | None:
     if not os.path.exists(creds_file):
         return None
     with open(creds_file) as f:
-        data = json.load(f)
-    client_id = (data.get("client_id") or "").strip()
-    client_secret = (data.get("client_secret") or "").strip()
-    refresh_token = (data.get("refresh_token") or "").strip()
+        creds = json.load(f)
+    client_id = creds.get("client_id", "").strip()
+    client_secret = creds.get("client_secret", "").strip()
+    refresh_token = creds.get("refresh_token", "").strip()
     if client_id and client_secret and refresh_token:
         return client_id, client_secret, refresh_token
     return None
@@ -420,7 +450,7 @@ def main() -> None:
         }[args.command](args)
     except Exception as e:
         log(f"Error: {e}")
-        print(json.dumps({"error": str(e)}))
+        print(json.dumps(structured_error(str(e))))
         sys.exit(1)
 
 

@@ -41,6 +41,8 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
+from google_auth_errors import structured_error
+
 OP_VAULT = os.environ.get("GOOGLE_1PASSWORD_VAULT", "Agent Tools")
 OP_CLIENT_ITEM = os.environ.get("GOOGLE_1PASSWORD_CLIENT", "Google OAuth Client")
 OP_CREDS_ITEMS = {
@@ -89,7 +91,7 @@ _active_account: str = "1"
 
 
 def die(message: str, code: int = 1) -> int:
-    print(message, file=sys.stderr)
+    print(json.dumps(structured_error(message)), file=sys.stdout)
     return code
 
 
@@ -150,7 +152,6 @@ def _load_creds_from_op() -> tuple[str, str, str] | None:
 
     client_id = _op_read(f"{client_base}/client-id") or _op_read(f"{client_base}/client_id")
     client_secret = _op_read(f"{client_base}/client-secret") or _op_read(f"{client_base}/client_secret")
-
     if not client_id or not client_secret:
         client_id = _op_read(f"{creds_base}/client-id") or _op_read(f"{creds_base}/client_id")
         client_secret = _op_read(f"{creds_base}/client-secret") or _op_read(f"{creds_base}/client_secret")
