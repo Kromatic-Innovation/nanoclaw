@@ -23,6 +23,7 @@ import {
   PreCompactHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
+import { mcpServers, resolveServerPath } from './mcp-registry.js';
 
 interface ContainerInput {
   prompt: string;
@@ -375,8 +376,6 @@ async function runQuery(
   prompt: string,
   sessionId: string | undefined,
   mcpServerPath: string,
-  docsMcpPath: string,
-  sheetsMcpPath: string,
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
@@ -471,17 +470,14 @@ async function runQuery(
         'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*',
-        'mcp__google-drive__*',
-        'mcp__google-gmail__*',
-        'mcp__google-docs__*',
-        'mcp__google-sheets__*',
-        'mcp__google-calendar__*',
+        ...mcpServers.map((s) => s.allowedToolPattern),
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
       mcpServers: {
+        // Core nanoclaw IPC server (always present)
         nanoclaw: {
           command: 'node',
           args: [mcpServerPath],
@@ -491,46 +487,17 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
-        'google-drive': {
-          command: 'node',
-          args: [
-            path.join(
-              path.dirname(fileURLToPath(import.meta.url)),
-              'drive-mcp-stdio.js',
-            ),
-          ],
-          env: {},
-        },
-        'google-gmail': {
-          command: 'node',
-          args: [
-            path.join(
-              path.dirname(fileURLToPath(import.meta.url)),
-              'gmail-mcp-stdio.js',
-            ),
-          ],
-          env: {},
-        },
-        'google-docs': {
-          command: 'node',
-          args: [docsMcpPath],
-          env: {},
-        },
-        'google-sheets': {
-          command: 'node',
-          args: [sheetsMcpPath],
-          env: {},
-        },
-        'google-calendar': {
-          command: 'node',
-          args: [
-            path.join(
-              path.dirname(fileURLToPath(import.meta.url)),
-              'calendar-mcp-stdio.js',
-            ),
-          ],
-          env: {},
-        },
+        // Registry-driven MCP servers
+        ...Object.fromEntries(
+          mcpServers.map((s) => [
+            s.name,
+            {
+              command: 'node',
+              args: [resolveServerPath(s)],
+              env: s.env?.(containerInput) ?? {},
+            },
+          ]),
+        ),
       },
       hooks: {
         PreCompact: [
@@ -674,8 +641,6 @@ async function main(): Promise<void> {
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
-  const docsMcpPath = path.join(__dirname, 'docs-mcp-stdio.js');
-  const sheetsMcpPath = path.join(__dirname, 'sheets-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
@@ -732,8 +697,6 @@ async function main(): Promise<void> {
         prompt,
         sessionId,
         mcpServerPath,
-        docsMcpPath,
-        sheetsMcpPath,
         containerInput,
         sdkEnv,
         resumeAt,

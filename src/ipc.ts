@@ -4,15 +4,11 @@ import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
 
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
-import { processCalendarIpc } from './calendar-ipc.js';
-import { processDriveIpc } from './drive-ipc.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
-import { processGmailIpc } from './gmail-ipc.js';
 import { isValidGroupFolder } from './group-folder.js';
-import { processDocsIpc } from './docs-ipc.js';
+import { ipcHandlers } from './ipc-registry.js';
 import { logger } from './logger.js';
-import { processSheetsIpc } from './sheets-ipc.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
@@ -151,47 +147,21 @@ export function startIpcWatcher(deps: IpcDeps): void {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
       }
 
-      // Drive IPC
-      try {
-        processDriveIpc(path.join(ipcBaseDir, sourceGroup));
-      } catch (err) {
-        logger.error({ err, sourceGroup }, 'Error processing Drive IPC');
-      }
-
-      // Gmail IPC
-      try {
-        processGmailIpc(path.join(ipcBaseDir, sourceGroup));
-      } catch (err) {
-        logger.error({ err, sourceGroup }, 'Error processing Gmail IPC');
-      }
-
-      // Process Google Docs IPC requests
-      try {
-        const groupIpcDir = path.join(ipcBaseDir, sourceGroup);
-        processDocsIpc(groupIpcDir);
-      } catch (err) {
-        logger.error(
-          { err, sourceGroup },
-          'Error processing Docs IPC requests',
-        );
-      }
-
-      // Process Google Sheets IPC requests
-      try {
-        const groupIpcDir2 = path.join(ipcBaseDir, sourceGroup);
-        processSheetsIpc(groupIpcDir2);
-      } catch (err) {
-        logger.error(
-          { err, sourceGroup },
-          'Error processing Sheets IPC requests',
-        );
-      }
-
-      // Calendar IPC
-      try {
-        processCalendarIpc(path.join(ipcBaseDir, sourceGroup));
-      } catch (err) {
-        logger.error({ err, sourceGroup }, 'Error processing Calendar IPC');
+      // Process all registered IPC handlers
+      const groupIpcDir = path.join(ipcBaseDir, sourceGroup);
+      for (const handler of ipcHandlers) {
+        try {
+          if (handler.requiresIsMain) {
+            handler.process(groupIpcDir, isMain);
+          } else {
+            handler.process(groupIpcDir);
+          }
+        } catch (err) {
+          logger.error(
+            { err, sourceGroup, service: handler.serviceName },
+            `Error processing ${handler.serviceName} IPC`,
+          );
+        }
       }
     }
 
