@@ -9,6 +9,7 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { processGmailIpc } from './gmail-ipc.js';
 import { isValidGroupFolder } from './group-folder.js';
+import { processDocsIpc } from './docs-ipc.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
@@ -160,6 +161,17 @@ export function startIpcWatcher(deps: IpcDeps): void {
         processGmailIpc(path.join(ipcBaseDir, sourceGroup));
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error processing Gmail IPC');
+      }
+
+      // Process Google Docs IPC requests
+      try {
+        const groupIpcDir = path.join(ipcBaseDir, sourceGroup);
+        processDocsIpc(groupIpcDir);
+      } catch (err) {
+        logger.error(
+          { err, sourceGroup },
+          'Error processing Docs IPC requests',
+        );
       }
     }
 

@@ -375,6 +375,7 @@ async function runQuery(
   prompt: string,
   sessionId: string | undefined,
   mcpServerPath: string,
+  docsMcpPath: string,
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
@@ -471,6 +472,7 @@ async function runQuery(
         'mcp__nanoclaw__*',
         'mcp__google-drive__*',
         'mcp__google-gmail__*',
+        'mcp__google-docs__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -504,6 +506,11 @@ async function runQuery(
               'gmail-mcp-stdio.js',
             ),
           ],
+          env: {},
+        },
+        'google-docs': {
+          command: 'node',
+          args: [docsMcpPath],
           env: {},
         },
       },
@@ -649,6 +656,7 @@ async function main(): Promise<void> {
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
+  const docsMcpPath = path.join(__dirname, 'docs-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
@@ -705,6 +713,7 @@ async function main(): Promise<void> {
         prompt,
         sessionId,
         mcpServerPath,
+        docsMcpPath,
         containerInput,
         sdkEnv,
         resumeAt,
