@@ -16,14 +16,8 @@ import path from 'path';
 
 import { logger } from './logger.js';
 
-const OPENCLAW_SCRIPTS = path.join(
-  process.env.HOME || '',
-  '.openclaw',
-  'workspace',
-  'scripts',
-);
-const GMAIL_WRAPPER = path.join(OPENCLAW_SCRIPTS, 'gmail_wrapper.py');
 const SCRIPTS_DIR = path.join(process.cwd(), 'scripts');
+const GMAIL_WRAPPER = path.join(SCRIPTS_DIR, 'gmail_wrapper.py');
 const EMAIL_ACTION_GUARD = path.join(SCRIPTS_DIR, 'email-action-guard.py');
 
 // Commands that bypass the action guard (read-only)

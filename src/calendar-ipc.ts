@@ -15,16 +15,8 @@ import path from 'path';
 
 import { logger } from './logger.js';
 
-const OPENCLAW_SCRIPTS = path.join(
-  process.env.HOME || '',
-  '.openclaw',
-  'workspace',
-  'scripts',
-);
-const CALENDAR_WRAPPER = path.join(
-  OPENCLAW_SCRIPTS,
-  'google_calendar_wrapper.py',
-);
+const SCRIPTS_DIR = path.join(process.cwd(), 'scripts');
+const CALENDAR_WRAPPER = path.join(SCRIPTS_DIR, 'google_calendar_wrapper.py');
 
 interface CalendarRequest {
   id: string;

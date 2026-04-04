@@ -119,6 +119,17 @@ server.tool(
 );
 
 server.tool(
+  'move_file',
+  'Move a file to a different folder in Google Drive',
+  {
+    file_id: z.string().describe('Google Drive file ID'),
+    to_folder_id: z.string().describe('Destination folder ID'),
+    account: accountParam,
+  },
+  async (args) => textResult(await ipcRequest('move_file', args)),
+);
+
+server.tool(
   'upload_file',
   'Upload a file to Google Drive',
   {

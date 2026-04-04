@@ -15,13 +15,8 @@ import path from 'path';
 
 import { logger } from './logger.js';
 
-const OPENCLAW_SCRIPTS = path.join(
-  process.env.HOME || '',
-  '.openclaw',
-  'workspace',
-  'scripts',
-);
-const DRIVE_WRAPPER = path.join(OPENCLAW_SCRIPTS, 'google_drive_wrapper.py');
+const SCRIPTS_DIR = path.join(process.cwd(), 'scripts');
+const DRIVE_WRAPPER = path.join(SCRIPTS_DIR, 'google_drive_wrapper.py');
 
 interface DriveRequest {
   id: string;
@@ -100,6 +95,15 @@ async function handleRequest(req: DriveRequest): Promise<unknown> {
       const cmdArgs = ['upload', '--file', String(args.file_path)];
       if (args.folder_id) cmdArgs.push('--folder-id', String(args.folder_id));
       return runDriveCmd(cmdArgs, account);
+    }
+
+    case 'move_file': {
+      if (!args.file_id) throw new Error('file_id is required');
+      if (!args.to_folder_id) throw new Error('to_folder_id is required');
+      return runDriveCmd(
+        ['move', '--id', String(args.file_id), '--to-folder-id', String(args.to_folder_id)],
+        account,
+      );
     }
 
     default:

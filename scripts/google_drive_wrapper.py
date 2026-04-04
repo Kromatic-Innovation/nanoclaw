@@ -41,7 +41,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-ITEM_TITLE = os.environ.get("GOOGLE_1PASSWORD_ITEM", "")
+OP_VAULT = os.environ.get("GOOGLE_1PASSWORD_VAULT", "Agent Tools")
+OP_CLIENT_ITEM = os.environ.get("GOOGLE_1PASSWORD_CLIENT", "Google OAuth Client")
+OP_CREDS_ITEMS = {
+    "1": os.environ.get("GOOGLE_1PASSWORD_ITEM", "Google OAuth Credentials"),
+    "2": os.environ.get("GOOGLE_1PASSWORD_ITEM_2", "Google OAuth Credentials 2"),
+}
 
 DRIVE_API = "https://www.googleapis.com/drive/v3"
 UPLOAD_API = "https://www.googleapis.com/upload/drive/v3"
@@ -54,10 +59,13 @@ _active_account: str = "1"
 def _resolve_creds_file(account: str = "1") -> str:
     """Resolve credentials file path with flexible fallback.
 
+    Uses the shared google-gmail credentials (same OAuth token as Gmail,
+    Docs, Sheets, Calendar). The token includes the drive scope.
+
     Search order per account:
       1. Env var GOOGLE_CREDS_FILE (account 1) / GOOGLE_CREDS_FILE_2 (account 2)
-      2. ~/.config/nanoclaw/secrets/google-drive.json (or -2.json)
-      3. ~/.openclaw/secrets/google-drive.json (or -2.json)
+      2. ~/.config/nanoclaw/secrets/google-gmail.json (or -2.json)
+      3. ~/.openclaw/secrets/google-gmail.json (or -2.json)
     """
     suffix = "" if account == "1" else f"-{account}"
     env_key = "GOOGLE_CREDS_FILE" if account == "1" else f"GOOGLE_CREDS_FILE_{account}"
@@ -66,8 +74,8 @@ def _resolve_creds_file(account: str = "1") -> str:
         return os.path.expanduser(env_val)
 
     candidates = [
-        os.path.expanduser(f"~/.config/nanoclaw/secrets/google-drive{suffix}.json"),
-        os.path.expanduser(f"~/.openclaw/secrets/google-drive{suffix}.json"),
+        os.path.expanduser(f"~/.config/nanoclaw/secrets/google-gmail{suffix}.json"),
+        os.path.expanduser(f"~/.openclaw/secrets/google-gmail{suffix}.json"),
     ]
     for path_ in candidates:
         if os.path.exists(path_):
@@ -132,49 +140,71 @@ def get_field(item: dict, wanted: str) -> str | None:
     return None
 
 
-def load_creds() -> tuple[str, str, str]:
-    creds_file = CREDS_FILES.get(_active_account, CREDS_FILES["1"])
-    if os.path.exists(creds_file):
-        with open(creds_file) as f:
-            data = json.load(f)
-        client_id = (data.get("client_id") or "").strip()
-        client_secret = (data.get("client_secret") or "").strip()
-        refresh_token = (data.get("refresh_token") or "").strip()
-        missing = [
-            name
-            for name, value in [
-                ("client_id", client_id),
-                ("client_secret", client_secret),
-                ("refresh_token", refresh_token),
-            ]
-            if not value
-        ]
-        if missing:
-            raise RuntimeError(f"Missing field(s) in creds file '{creds_file}': {', '.join(missing)}")
+def _op_read(uri: str) -> str | None:
+    """Read a single field via op:// URI. Returns None on failure."""
+    try:
+        val = op_run(["op", "read", uri]).strip()
+        return val or None
+    except RuntimeError:
+        return None
+
+
+def _load_creds_from_op() -> tuple[str, str, str] | None:
+    """Try loading credentials from 1Password (primary source).
+
+    Reads client-id/client-secret from the shared client item, and
+    refresh-token from the per-account credentials item.
+    Falls back to legacy layout (all fields in one item).
+    """
+    creds_item = OP_CREDS_ITEMS.get(_active_account, OP_CREDS_ITEMS["1"])
+    client_base = f"op://{OP_VAULT}/{OP_CLIENT_ITEM}"
+    creds_base = f"op://{OP_VAULT}/{creds_item}"
+
+    # Try shared client item first
+    client_id = _op_read(f"{client_base}/client-id") or _op_read(f"{client_base}/client_id")
+    client_secret = _op_read(f"{client_base}/client-secret") or _op_read(f"{client_base}/client_secret")
+
+    # Fall back to legacy layout (all fields in creds item)
+    if not client_id or not client_secret:
+        client_id = _op_read(f"{creds_base}/client-id") or _op_read(f"{creds_base}/client_id")
+        client_secret = _op_read(f"{creds_base}/client-secret") or _op_read(f"{creds_base}/client_secret")
+
+    refresh_token = _op_read(f"{creds_base}/refresh-token") or _op_read(f"{creds_base}/refresh_token")
+
+    if client_id and client_secret and refresh_token:
         return client_id, client_secret, refresh_token
+    return None
 
-    if _active_account != "1":
-        raise RuntimeError(
-            f"Creds file not found for account {_active_account}: {creds_file}. "
-            "Run google_reauth.py --account 2 to set up the second account."
-        )
 
-    item = op_item_json(ITEM_TITLE)
-    client_id = get_field(item, "client_id")
-    client_secret = get_field(item, "client_secret")
-    refresh_token = get_field(item, "refresh_token")
-    missing = [
-        name
-        for name, value in [
-            ("client_id", client_id),
-            ("client_secret", client_secret),
-            ("refresh_token", refresh_token),
-        ]
-        if not value
-    ]
-    if missing:
-        raise RuntimeError(f"Missing field(s) in 1Password item '{ITEM_TITLE}': {', '.join(missing)}")
-    return client_id, client_secret, refresh_token
+def _load_creds_from_file() -> tuple[str, str, str] | None:
+    """Try loading credentials from local file (fallback)."""
+    creds_file = CREDS_FILES.get(_active_account, CREDS_FILES["1"])
+    if not os.path.exists(creds_file):
+        return None
+    with open(creds_file) as f:
+        data = json.load(f)
+    client_id = (data.get("client_id") or "").strip()
+    client_secret = (data.get("client_secret") or "").strip()
+    refresh_token = (data.get("refresh_token") or "").strip()
+    if client_id and client_secret and refresh_token:
+        return client_id, client_secret, refresh_token
+    return None
+
+
+def load_creds() -> tuple[str, str, str]:
+    """Load OAuth credentials. 1Password first, local file fallback."""
+    result = _load_creds_from_op()
+    if result:
+        return result
+    result = _load_creds_from_file()
+    if result:
+        return result
+    raise RuntimeError(
+        f"Google OAuth credentials not found in 1Password. "
+        f"Expected '{OP_CLIENT_ITEM}' (client-id, client-secret) and "
+        f"'{OP_CREDS_ITEMS.get(_active_account)}' (refresh-token) in vault '{OP_VAULT}'. "
+        f"Run google_reauth.py to set up."
+    )
 
 
 def get_access_token() -> str:
@@ -223,6 +253,9 @@ def api_request(
     }
     if extra_headers:
         headers.update(extra_headers)
+    if method == "DELETE":
+        raise RuntimeError("DELETE operations are not permitted on Google Drive")
+
     req = urllib.request.Request(
         url,
         data=data,
@@ -320,6 +353,26 @@ def cmd_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_move(args: argparse.Namespace) -> int:
+    # Get current parents
+    meta = api_request("GET", f"{DRIVE_API}/files/{args.id}", params={"fields": "parents"})
+    if not isinstance(meta, dict):
+        return die("Unexpected response from metadata request")
+
+    current_parents = ",".join(meta.get("parents", []))
+    result = api_request(
+        "PATCH",
+        f"{DRIVE_API}/files/{args.id}",
+        params={
+            "addParents": args.to_folder_id,
+            "removeParents": current_parents,
+            "fields": "id,name,parents",
+        },
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def cmd_upload(args: argparse.Namespace) -> int:
     file_path = args.file
     if not os.path.exists(file_path):
@@ -391,6 +444,11 @@ def parser() -> argparse.ArgumentParser:
     p_search.add_argument("--query", required=True, help="Search query")
     p_search.add_argument("--max-results", type=int, default=20, help="Max files to return")
 
+    # move
+    p_move = sub.add_parser("move")
+    p_move.add_argument("--id", required=True, help="File ID to move")
+    p_move.add_argument("--to-folder-id", required=True, help="Destination folder ID")
+
     # upload
     p_upload = sub.add_parser("upload")
     p_upload.add_argument("--file", required=True, help="Local file path to upload")
@@ -412,6 +470,8 @@ def main() -> int:
             return cmd_read(args)
         if args.command == "search":
             return cmd_search(args)
+        if args.command == "move":
+            return cmd_move(args)
         if args.command == "upload":
             return cmd_upload(args)
         return die("Unknown command")

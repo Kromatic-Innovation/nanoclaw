@@ -59,9 +59,12 @@ CREDS_FILES = {
     "2": _resolve_creds_file("2"),
 }
 CREDS_FILE = CREDS_FILES["1"]  # default for backwards compat
-ITEM_TITLE = os.environ.get(
-    "GMAIL_1PASSWORD_ITEM", ""
-)
+OP_VAULT = os.environ.get("GOOGLE_1PASSWORD_VAULT", "Agent Tools")
+OP_CLIENT_ITEM = os.environ.get("GOOGLE_1PASSWORD_CLIENT", "Google OAuth Client")
+OP_CREDS_ITEMS = {
+    "1": os.environ.get("GOOGLE_1PASSWORD_ITEM", "Google OAuth Credentials"),
+    "2": os.environ.get("GOOGLE_1PASSWORD_ITEM_2", "Google OAuth Credentials 2"),
+}
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets"
 
@@ -87,59 +90,63 @@ def _op_run(args: list[str]) -> str:
         raise RuntimeError(e.output.strip())
 
 
-def _op_item_json(item_title: str) -> dict:
+def _op_read(uri: str) -> str | None:
+    """Read a single field via op:// URI. Returns None on failure."""
     try:
-        raw = _op_run(["op", "item", "get", item_title, "--format", "json"])
-        return json.loads(raw)
-    except RuntimeError as first_error:
-        try:
-            items = json.loads(
-                _op_run(["op", "item", "list", "--format", "json"])
-            )
-            match = next(
-                (i for i in items if i.get("title") == item_title), None
-            )
-            if match:
-                raw = _op_run(
-                    ["op", "item", "get", match["id"], "--format", "json"]
-                )
-                return json.loads(raw)
-        except Exception:
-            pass
-        raise first_error
+        val = _op_run(["op", "read", uri]).strip()
+        return val or None
+    except RuntimeError:
+        return None
 
 
-def _op_field(item: dict, label: str) -> str:
-    for f in item.get("fields", []):
-        if f.get("label") == label or f.get("id") == label:
-            return f.get("value", "")
-    raise RuntimeError(f"Field '{label}' not found in 1Password item")
+def _load_creds_from_op() -> tuple[str, str, str] | None:
+    """Try loading credentials from 1Password (primary source)."""
+    creds_item = OP_CREDS_ITEMS.get(_active_account, OP_CREDS_ITEMS["1"])
+    client_base = f"op://{OP_VAULT}/{OP_CLIENT_ITEM}"
+    creds_base = f"op://{OP_VAULT}/{creds_item}"
+
+    client_id = _op_read(f"{client_base}/client-id") or _op_read(f"{client_base}/client_id")
+    client_secret = _op_read(f"{client_base}/client-secret") or _op_read(f"{client_base}/client_secret")
+
+    if not client_id or not client_secret:
+        client_id = _op_read(f"{creds_base}/client-id") or _op_read(f"{creds_base}/client_id")
+        client_secret = _op_read(f"{creds_base}/client-secret") or _op_read(f"{creds_base}/client_secret")
+
+    refresh_token = _op_read(f"{creds_base}/refresh-token") or _op_read(f"{creds_base}/refresh_token")
+
+    if client_id and client_secret and refresh_token:
+        return client_id, client_secret, refresh_token
+    return None
+
+
+def _load_creds_from_file() -> tuple[str, str, str] | None:
+    """Try loading credentials from local file (fallback)."""
+    creds_file = CREDS_FILES.get(_active_account, CREDS_FILES["1"])
+    if not os.path.exists(creds_file):
+        return None
+    with open(creds_file) as f:
+        data = json.load(f)
+    client_id = (data.get("client_id") or "").strip()
+    client_secret = (data.get("client_secret") or "").strip()
+    refresh_token = (data.get("refresh_token") or "").strip()
+    if client_id and client_secret and refresh_token:
+        return client_id, client_secret, refresh_token
+    return None
 
 
 def load_creds() -> tuple[str, str, str]:
-    """Load OAuth credentials. Returns (client_id, client_secret, refresh_token)."""
-    creds_file = CREDS_FILES.get(_active_account, CREDS_FILES["1"])
-    if os.path.exists(creds_file):
-        with open(creds_file) as f:
-            creds = json.load(f)
-        return (
-            creds["client_id"],
-            creds["client_secret"],
-            creds["refresh_token"],
-        )
-
-    if _active_account != "1":
-        raise RuntimeError(
-            f"Creds file not found for account {_active_account}: {creds_file}. "
-            "Run google_reauth.py --account 2 to set up the second account."
-        )
-
-    log("Creds file not found, trying 1Password...")
-    item = _op_item_json(ITEM_TITLE)
-    return (
-        _op_field(item, "client_id"),
-        _op_field(item, "client_secret"),
-        _op_field(item, "refresh_token"),
+    """Load OAuth credentials. 1Password first, local file fallback."""
+    result = _load_creds_from_op()
+    if result:
+        return result
+    result = _load_creds_from_file()
+    if result:
+        return result
+    raise RuntimeError(
+        f"Google OAuth credentials not found in 1Password. "
+        f"Expected '{OP_CLIENT_ITEM}' (client-id, client-secret) and "
+        f"'{OP_CREDS_ITEMS.get(_active_account)}' (refresh-token) in vault '{OP_VAULT}'. "
+        f"Run google_reauth.py to set up."
     )
 
 
