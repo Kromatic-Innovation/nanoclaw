@@ -117,6 +117,12 @@ Instructions here...
 
 Test your contribution on a fresh clone before submitting. For skills, run the skill end-to-end and verify it works.
 
+**When adding a new MCP integration**, add corresponding entries to:
+- `src/ipc-smoke.test.ts` — the smoke tests auto-discover handlers, but verify your new handler follows the standard export pattern (`processXxxIpc`)
+- `src/mcp-ipc-contract.test.ts` — the contract test auto-discovers MCP tools and IPC cases; no manual entry needed if you follow naming conventions (`{service}-mcp-stdio.ts` ↔ `{service}-ipc.ts`)
+
+Run `npm test` to verify both smoke and contract tests pass with your new integration.
+
 ## Pull Requests
 
 ### Before opening
