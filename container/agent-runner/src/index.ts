@@ -475,6 +475,7 @@ async function runQuery(
         'mcp__google-gmail__*',
         'mcp__google-docs__*',
         'mcp__google-sheets__*',
+        'mcp__google-calendar__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -518,6 +519,16 @@ async function runQuery(
         'google-sheets': {
           command: 'node',
           args: [sheetsMcpPath],
+          env: {},
+        },
+        'google-calendar': {
+          command: 'node',
+          args: [
+            path.join(
+              path.dirname(fileURLToPath(import.meta.url)),
+              'calendar-mcp-stdio.js',
+            ),
+          ],
           env: {},
         },
       },
