@@ -469,6 +469,7 @@ async function runQuery(
         'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*',
+        'mcp__memory__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -480,6 +481,14 @@ async function runQuery(
           args: [mcpServerPath],
           env: {
             NANOCLAW_CHAT_JID: containerInput.chatJid,
+            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+          },
+        },
+        memory: {
+          command: 'node',
+          args: [memoryMcpPath],
+          env: {
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
@@ -627,6 +636,7 @@ async function main(): Promise<void> {
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
+  const memoryMcpPath = path.join(__dirname, 'memory-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
