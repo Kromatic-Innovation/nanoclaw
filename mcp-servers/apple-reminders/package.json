@@ -1,0 +1,21 @@
+{
+  "name": "mcp-apple-reminders",
+  "version": "1.0.0",
+  "description": "MCP server for Apple Reminders (read, create, complete — no delete)",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.10.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
