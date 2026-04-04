@@ -21,16 +21,27 @@ const MCP_DIR = path.join(process.cwd(), 'container', 'agent-runner', 'src');
 
 /**
  * Extract tool names from an MCP stdio server file.
- * Matches patterns like: server.tool('tool_name', or server.tool("tool_name",
+ * Matches patterns like:
+ *   server.tool('tool_name', ...)
+ *   registerTool('group', 'tool_name', ...)
  */
 function extractMcpToolNames(filePath: string): string[] {
   const content = fs.readFileSync(filePath, 'utf-8');
-  const toolPattern = /server\.tool\(\s*['"]([^'"]+)['"]/g;
   const tools: string[] = [];
   let match;
-  while ((match = toolPattern.exec(content)) !== null) {
+
+  // Direct: server.tool('tool_name', ...)
+  const directPattern = /server\.tool\(\s*['"]([^'"]+)['"]/g;
+  while ((match = directPattern.exec(content)) !== null) {
     tools.push(match[1]);
   }
+
+  // Wrapper: registerTool('group', 'tool_name', ...)
+  const wrapperPattern = /registerTool\(\s*['"][^'"]+['"]\s*,\s*['"]([^'"]+)['"]/g;
+  while ((match = wrapperPattern.exec(content)) !== null) {
+    tools.push(match[1]);
+  }
+
   return tools;
 }
 
