@@ -9,6 +9,38 @@ Your NanoClaw fork drifts from upstream as you customize it. This skill pulls up
 
 Run `/update-nanoclaw` in Claude Code.
 
+## Three-Repo Installations
+
+If your installation uses a fork-based workflow (e.g. upstream → org fork → private install),
+upstream updates should flow through the **fork first**, not directly into the installation.
+
+```
+qwibitai/nanoclaw              (upstream)
+        ↓  /update-nanoclaw (run in a fork checkout)
+Kromatic-Innovation/nanoclaw   (fork — skill/* branches)
+        ↓  git merge nanoclaw/skill/*
+TriKro/voltaire                (installation)
+```
+
+**How to update a three-repo installation:**
+
+1. **Update the fork first.** Check out the fork repo (not the installation) and run
+   `/update-nanoclaw` there. This merges upstream changes into the fork's `main`.
+2. **Forward-merge into skill branches.** If any active `skill/*` branches need the
+   upstream changes, merge the fork's updated `main` into each skill branch.
+3. **Merge into the installation.** In the installation repo, fetch the fork and merge
+   the updated skill branches:
+   ```bash
+   git fetch nanoclaw
+   git merge nanoclaw/skill/<name> --no-ff
+   ```
+
+**Do not run `/update-nanoclaw` directly in the installation repo** — it would merge
+upstream into the installation, bypassing the fork and creating divergence between
+the fork's skill branches and the installation.
+
+See the installation's `AGENTS.md` for the full change hierarchy and repo chain.
+
 ## How it works
 
 **Preflight**: checks for clean working tree (`git status --porcelain`). If `upstream` remote is missing, asks you for the URL (defaults to `https://github.com/qwibitai/nanoclaw.git`) and adds it. Detects the upstream branch name (`main` or `master`).
