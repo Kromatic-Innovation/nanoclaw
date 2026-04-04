@@ -11,6 +11,7 @@ import { processGmailIpc } from './gmail-ipc.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { processDocsIpc } from './docs-ipc.js';
 import { logger } from './logger.js';
+import { processSheetsIpc } from './sheets-ipc.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
@@ -171,6 +172,17 @@ export function startIpcWatcher(deps: IpcDeps): void {
         logger.error(
           { err, sourceGroup },
           'Error processing Docs IPC requests',
+        );
+      }
+
+      // Process Google Sheets IPC requests
+      try {
+        const groupIpcDir2 = path.join(ipcBaseDir, sourceGroup);
+        processSheetsIpc(groupIpcDir2);
+      } catch (err) {
+        logger.error(
+          { err, sourceGroup },
+          'Error processing Sheets IPC requests',
         );
       }
     }

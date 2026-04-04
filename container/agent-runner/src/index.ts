@@ -376,6 +376,7 @@ async function runQuery(
   sessionId: string | undefined,
   mcpServerPath: string,
   docsMcpPath: string,
+  sheetsMcpPath: string,
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
@@ -473,6 +474,7 @@ async function runQuery(
         'mcp__google-drive__*',
         'mcp__google-gmail__*',
         'mcp__google-docs__*',
+        'mcp__google-sheets__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -511,6 +513,11 @@ async function runQuery(
         'google-docs': {
           command: 'node',
           args: [docsMcpPath],
+          env: {},
+        },
+        'google-sheets': {
+          command: 'node',
+          args: [sheetsMcpPath],
           env: {},
         },
       },
@@ -657,6 +664,7 @@ async function main(): Promise<void> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
   const docsMcpPath = path.join(__dirname, 'docs-mcp-stdio.js');
+  const sheetsMcpPath = path.join(__dirname, 'sheets-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
@@ -714,6 +722,7 @@ async function main(): Promise<void> {
         sessionId,
         mcpServerPath,
         docsMcpPath,
+        sheetsMcpPath,
         containerInput,
         sdkEnv,
         resumeAt,
