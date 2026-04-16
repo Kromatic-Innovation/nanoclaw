@@ -72,6 +72,7 @@ async function handleRequest(req: DriveRequest): Promise<unknown> {
       const cmdArgs = ['list'];
       if (args.query) cmdArgs.push('--query', String(args.query));
       if (args.folder_id) cmdArgs.push('--folder-id', String(args.folder_id));
+      if (args.drive_id) cmdArgs.push('--drive-id', String(args.drive_id));
       if (args.max_results)
         cmdArgs.push('--max-results', String(args.max_results));
       return runDriveCmd(cmdArgs, account);
@@ -90,6 +91,7 @@ async function handleRequest(req: DriveRequest): Promise<unknown> {
     case 'search_files': {
       if (!args.query) throw new Error('query is required');
       const cmdArgs = ['search', '--query', String(args.query)];
+      if (args.drive_id) cmdArgs.push('--drive-id', String(args.drive_id));
       if (args.max_results)
         cmdArgs.push('--max-results', String(args.max_results));
       return runDriveCmd(cmdArgs, account);

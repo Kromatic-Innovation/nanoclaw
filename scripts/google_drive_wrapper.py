@@ -7,6 +7,7 @@ Capabilities:
 - read file content by ID (text-based files only)
 - search files by name/content query
 - upload a file to Drive (to a specific folder)
+- shared drive support (all commands pass supportsAllDrives; list/search accept --drive-id)
 
 No delete command on purpose.
 
@@ -23,10 +24,12 @@ Defaults:
 Examples:
   python3 scripts/google_drive_wrapper.py list --max-results 10
   python3 scripts/google_drive_wrapper.py list --folder-id FOLDER_ID
+  python3 scripts/google_drive_wrapper.py list --drive-id SHARED_DRIVE_ID
   python3 scripts/google_drive_wrapper.py list --query "mimeType='application/pdf'"
   python3 scripts/google_drive_wrapper.py get --id FILE_ID
   python3 scripts/google_drive_wrapper.py read --id FILE_ID
   python3 scripts/google_drive_wrapper.py search --query "budget report"
+  python3 scripts/google_drive_wrapper.py search --query "budget report" --drive-id SHARED_DRIVE_ID
   python3 scripts/google_drive_wrapper.py upload --file /path/to/file.txt --folder-id FOLDER_ID
 """
 
@@ -249,13 +252,18 @@ def api_request(
 def cmd_list(args: argparse.Namespace) -> int:
     params: dict[str, str] = {
         "pageSize": str(args.max_results),
-        "fields": "files(id,name,mimeType,modifiedTime,size,parents),nextPageToken",
+        "fields": "files(id,name,mimeType,modifiedTime,size,parents,driveId),nextPageToken",
+        "includeItemsFromAllDrives": "true",
+        "supportsAllDrives": "true",
     }
     query_parts: list[str] = []
     if args.folder_id:
         query_parts.append(f"'{args.folder_id}' in parents")
     if args.query:
         query_parts.append(args.query)
+    if args.drive_id:
+        params["corpora"] = "drive"
+        params["driveId"] = args.drive_id
     # Exclude trashed files by default
     query_parts.append("trashed = false")
     params["q"] = " and ".join(query_parts)
@@ -266,7 +274,10 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def cmd_get(args: argparse.Namespace) -> int:
-    params = {"fields": "id,name,mimeType,modifiedTime,size,parents,webViewLink,description"}
+    params = {
+        "fields": "id,name,mimeType,modifiedTime,size,parents,driveId,webViewLink,description",
+        "supportsAllDrives": "true",
+    }
     result = api_request("GET", f"{DRIVE_API}/files/{args.id}", params=params)
     print(json.dumps(result, indent=2))
     return 0
@@ -274,7 +285,10 @@ def cmd_get(args: argparse.Namespace) -> int:
 
 def cmd_read(args: argparse.Namespace) -> int:
     # First get metadata to check mime type
-    meta = api_request("GET", f"{DRIVE_API}/files/{args.id}", params={"fields": "mimeType,name"})
+    meta = api_request("GET", f"{DRIVE_API}/files/{args.id}", params={
+        "fields": "mimeType,name",
+        "supportsAllDrives": "true",
+    })
     if not isinstance(meta, dict):
         return die("Unexpected response from metadata request")
 
@@ -293,13 +307,13 @@ def cmd_read(args: argparse.Namespace) -> int:
         content = api_request(
             "GET",
             f"{DRIVE_API}/files/{args.id}/export",
-            params={"mimeType": export_mime},
+            params={"mimeType": export_mime, "supportsAllDrives": "true"},
         )
     else:
         content = api_request(
             "GET",
             f"{DRIVE_API}/files/{args.id}",
-            params={"alt": "media"},
+            params={"alt": "media", "supportsAllDrives": "true"},
         )
 
     if isinstance(content, dict):
@@ -312,9 +326,15 @@ def cmd_read(args: argparse.Namespace) -> int:
 def cmd_search(args: argparse.Namespace) -> int:
     params: dict[str, str] = {
         "pageSize": str(args.max_results),
-        "fields": "files(id,name,mimeType,modifiedTime,size,parents),nextPageToken",
-        "q": f"fullText contains '{args.query}' and trashed = false",
+        "fields": "files(id,name,mimeType,modifiedTime,size,parents,driveId),nextPageToken",
+        "includeItemsFromAllDrives": "true",
+        "supportsAllDrives": "true",
     }
+    query_parts = [f"fullText contains '{args.query}'", "trashed = false"]
+    if args.drive_id:
+        params["corpora"] = "drive"
+        params["driveId"] = args.drive_id
+    params["q"] = " and ".join(query_parts)
     result = api_request("GET", f"{DRIVE_API}/files", params=params)
     print(json.dumps(result, indent=2))
     return 0
@@ -356,7 +376,11 @@ def cmd_upload(args: argparse.Namespace) -> int:
     result = api_request(
         "POST",
         f"{UPLOAD_API}/files",
-        params={"uploadType": "multipart", "fields": "id,name,mimeType,size,webViewLink"},
+        params={
+            "uploadType": "multipart",
+            "fields": "id,name,mimeType,size,webViewLink",
+            "supportsAllDrives": "true",
+        },
         raw_data=body,
         extra_headers={"Content-Type": f"multipart/related; boundary={boundary}"},
     )
@@ -376,6 +400,7 @@ def parser() -> argparse.ArgumentParser:
     p_list = sub.add_parser("list")
     p_list.add_argument("--query", default="", help="Drive query filter")
     p_list.add_argument("--folder-id", default=None, help="Parent folder ID")
+    p_list.add_argument("--drive-id", default=None, help="Shared drive ID (enables corpora=drive)")
     p_list.add_argument("--max-results", type=int, default=20, help="Max files to return")
 
     # get
@@ -389,6 +414,7 @@ def parser() -> argparse.ArgumentParser:
     # search
     p_search = sub.add_parser("search")
     p_search.add_argument("--query", required=True, help="Search query")
+    p_search.add_argument("--drive-id", default=None, help="Shared drive ID (enables corpora=drive)")
     p_search.add_argument("--max-results", type=int, default=20, help="Max files to return")
 
     # upload

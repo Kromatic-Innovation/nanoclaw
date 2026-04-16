@@ -63,7 +63,7 @@ const server = new McpServer({ name: 'google-drive', version: '1.0.0' });
 
 server.tool(
   'list_files',
-  'List files in Google Drive with optional query filter and folder scope',
+  'List files in Google Drive with optional query filter and folder scope. Supports shared drives via drive_id.',
   {
     query: z
       .string()
@@ -73,6 +73,10 @@ server.tool(
       .string()
       .optional()
       .describe('Parent folder ID to list files from'),
+    drive_id: z
+      .string()
+      .optional()
+      .describe('Shared drive ID to scope listing to a specific shared drive'),
     max_results: z
       .number()
       .optional()
@@ -104,11 +108,15 @@ server.tool(
 
 server.tool(
   'search_files',
-  'Search files in Google Drive by name or content',
+  'Search files in Google Drive by name or content. Supports shared drives via drive_id.',
   {
     query: z
       .string()
       .describe('Search query (searches file names and content)'),
+    drive_id: z
+      .string()
+      .optional()
+      .describe('Shared drive ID to scope search to a specific shared drive'),
     max_results: z
       .number()
       .optional()
