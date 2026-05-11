@@ -50,6 +50,49 @@ or rely on the workspace-level guidance in
 `$WORKSPACE/.claude/skills/contribute-to-nanoclaw/SKILL.md` (which
 re-states the same policy).
 
+## Three-tier pull-down chain (REQUIRED reading)
+
+NanoClaw flows down through three repos, each layer a fast-forward
+mirror of the layer above:
+
+```
+nanocoai/nanoclaw:main                  (upstream — the public project)
+        │  FF only via sync/upstream-main-* PRs
+        ▼
+Kromatic-Innovation/nanoclaw:main       (this fork — strict mirror)
+        │  FF only via sync (Voltaire's `nanoclaw` remote points here)
+        ▼
+TriKro/voltaire:upstream                (Voltaire's nanoclaw-tracking branch)
+        │  merged into develop after personal-customization rebase
+        ▼
+TriKro/voltaire:develop                 (Voltaire — where personal customization lives)
+```
+
+**Implications for every contribution on this fork:**
+
+1. **Upstream conventions are non-negotiable.** Skills, channels, and
+   plugins authored here must look indistinguishable from upstream's
+   own. No Voltaire-specific references in `<name>-upstream` or
+   `skill/<name>` branches — those branches feed both upstream and
+   Voltaire and must work for users who have never heard of Voltaire.
+2. **Personal customization lives in Voltaire, not in this fork.** Any
+   tweak that makes sense only for Tristan's install belongs in
+   `TriKro/voltaire:develop`, never in any branch of this fork.
+3. **Build each skill/channel/plugin on its own branch and keep it
+   independently mergeable.** Voltaire pulls them in via the `/add-<name>`
+   install flow (`git fetch nanoclaw skill/<name> && git merge ...`). If
+   your branch carries unrelated commits, that merge becomes painful.
+4. **When upstream changes need to flow down**, the path is: upstream PR
+   merges → fork `sync/upstream-main-YYYY-MM-DD` PR merges → Voltaire
+   `upstream` branch fast-forwards from fork `main` → Voltaire `develop`
+   rebases on `upstream` (or starts over if the rebase is destructive).
+   Keeping each layer FF-only keeps this tractable; merge commits in the
+   middle break it.
+
+This is why **fork `main` is FF-only**: every additional commit on fork
+`main` becomes a divergence Voltaire's `upstream` branch would have to
+handle. Branches are the deliverable; main is the pipe.
+
 ## Pre-upstream-PR review gate
 
 Before opening any PR from this fork to `nanocoai/nanoclaw`, run the
