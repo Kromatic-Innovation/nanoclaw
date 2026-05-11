@@ -12,10 +12,43 @@ feature work originate here; selected changes flow upstream to
 
 ## Branch policy
 
-- Default branch: `main`
-- Skill PRs to upstream live on `feature/<skill>` branches per the
-  `contribute-to-nanoclaw` workspace skill
-- Upstream sync via `sync/upstream-main` branches
+**`main` is a clean mirror of `nanocoai/nanoclaw` upstream.** Nothing
+originated in this fork ever lands on `main`. Branches ARE the deliverable
+for Kromatic-authored work — they live on the fork forever, never merge
+into `main` or anywhere else here.
+
+Ruleset on `main` (ID 14696793, active):
+
+- `deletion` — block branch deletion
+- `non_fast_forward` — block force-push
+- `required_linear_history` — block merge commits
+- `pull_request` required, 0 approvals, **only `rebase` merge method
+  allowed** — so PR-merging is effectively fast-forward
+
+**The only PRs allowed against `main`** are upstream syncs from a
+`sync/upstream-main-*` branch that contains exactly the upstream HEAD
+(zero divergence). Any PR to `main` that adds fork-only commits must be
+rejected — it would break the mirror.
+
+### Branch naming convention
+
+| Pattern                         | Purpose                                                                                                            | Lifespan                           |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------- |
+| `feat/<name>-v2`                | Work-in-progress port or new development                                                                           | Until ready, then renamed          |
+| `<name>-upstream`               | PR source branch targeting `nanocoai/nanoclaw`; contains exactly one feature + its SKILL.md (if any)               | Until upstream PR merges or closes |
+| `skill/<name>`                  | Fork-only install target for a skill; downstream consumers (voltaire etc.) pull from this branch via `/add-<name>` | Permanent on fork                  |
+| `kromatic-fork/<name>`          | Fork-only durable docs/config that we will never PR upstream                                                       | Permanent on fork                  |
+| `sync/upstream-main-YYYY-MM-DD` | Upstream sync candidate; PR'd to `main` then deleted                                                               | Single-use                         |
+| `legacy-v1/<name>`              | Frozen v1 snapshots — do not touch                                                                                 | Permanent reference                |
+
+### Where this AGENTS.md lives
+
+Since `main` mirrors upstream strictly, this file cannot live on `main`.
+It lives on the **`kromatic-fork/agents-md`** branch as durable fork-only
+policy. Agents working in this repo should fetch and read it from there,
+or rely on the workspace-level guidance in
+`$WORKSPACE/.claude/skills/contribute-to-nanoclaw/SKILL.md` (which
+re-states the same policy).
 
 ## Pre-upstream-PR review gate
 
