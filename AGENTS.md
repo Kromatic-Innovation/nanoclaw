@@ -4,11 +4,11 @@
 
 - **Owner:** Kromatic-Innovation (this fork)
 - **Repo:** nanoclaw
-- **Upstream:** [qwibitai/nanoclaw](https://github.com/qwibitai/nanoclaw)
+- **Upstream:** [nanocoai/nanoclaw](https://github.com/nanocoai/nanoclaw) (formerly `qwibitai/nanoclaw`; renamed 2026-05-11)
 
 This repo is the Kromatic-Innovation fork of NanoClaw. Skill updates and
 feature work originate here; selected changes flow upstream to
-`qwibitai/nanoclaw` via PR.
+`nanocoai/nanoclaw` via PR.
 
 ## Branch policy
 
@@ -19,7 +19,7 @@ feature work originate here; selected changes flow upstream to
 
 ## Pre-upstream-PR review gate
 
-Before opening any PR from this fork to `qwibitai/nanoclaw`, run the
+Before opening any PR from this fork to `nanocoai/nanoclaw`, run the
 workspace `/zenodotus` skill against the change scope:
 
 ```
